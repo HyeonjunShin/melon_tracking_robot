@@ -1,0 +1,9 @@
+av==12.3.0
+evdev==1.9.3
+numpy==2.5.1
+opencv-python==5.0.0.93
+pygame==2.6.1
+pynput==1.8.2
+pyorbbecsdk2==2.1.1
+python-xlib==0.33
+six==1.17.0
