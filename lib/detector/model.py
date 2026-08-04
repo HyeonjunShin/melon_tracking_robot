@@ -217,9 +217,9 @@ class DecoderModule(nn.Module):
         
         bboxes = torch.stack([x1, y1, x2, y2], dim=-1)
         
-        cls_scores = torch.sigmoid(cls_pred)
+        scores = torch.sigmoid(cls_pred)
         
-        return bboxes, cls_scores
+        return scores, bboxes
 
 class CombinedModel(nn.Module):
     def __init__(self, base_model):
