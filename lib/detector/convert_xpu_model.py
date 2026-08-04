@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 
 from datasets import ChamaeDataset, chamae_collate_fn, get_data, split_data
 from model import DetectionModel, CombinedModel
+from openvino.preprocess import PrePostProcessor, ResizeAlgorithm, PaddingMode
 
 paired_path = get_data()
 train_path, val_path = split_data(paired_path)
@@ -44,6 +45,28 @@ nncf_dataset = nncf.Dataset(calibration_tensors)
 
 print("🚀 INT8 NNCF Calibration 양자화 진행 중...")
 quantized_model = nncf.quantize(ov_model, nncf_dataset)
+
+
+ppp = PrePostProcessor(model)
+ppp.input().model().set_layout(ov.Layout("NCHW"))
+
+ppp.input().tensor().set_shape([1, 720, 1280, 3]).set_element_type(
+    ov.Type.u8
+).set_layout(ov.Layout("NHWC"))
+
+ppp.input().preprocess().resize(
+    ResizeAlgorithm.RESIZE_LINEAR, 360, 640
+).convert_element_type(ov.Type.f32).pad(
+    pads_begin=[0, 12, 0, 0],
+    pads_end=[0, 12, 0, 0],
+    value=[0.0],
+    mode=PaddingMode.CONSTANT,
+).scale(
+    255.0
+)
+
+model = ppp.build()
+
 ov.save_model(quantized_model, "model_int8.xml")
 
 print("2단계: INT8 캘리브레이션 양자화 완료! (model_int8.xml)")

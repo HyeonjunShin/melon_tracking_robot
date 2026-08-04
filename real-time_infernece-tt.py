@@ -5,7 +5,6 @@ import time
 import cv2
 import numpy as np
 import openvino as ov
-from openvino.preprocess import PrePostProcessor, ResizeAlgorithm, PaddingMode
 
 from lib.camera.gemini336 import LocklessBuffer, runner
 from lib.tracker.tracker import KalmanFilter3D, draw_3d_tf_axis
@@ -99,27 +98,27 @@ def main():
 
     model = core.read_model(INT8_MODEL_PATH)
 
-    ppp = PrePostProcessor(model)
-    ppp.input().model().set_layout(ov.Layout('NCHW'))
+    # ppp = PrePostProcessor(model)
+    # ppp.input().model().set_layout(ov.Layout('NCHW'))
 
-    ppp.input().tensor() \
-        .set_shape([1, 720, 1280, 3]) \
-        .set_element_type(ov.Type.u8) \
-        .set_layout(ov.Layout('NHWC'))
+    # ppp.input().tensor() \
+    #     .set_shape([1, 720, 1280, 3]) \
+    #     .set_element_type(ov.Type.u8) \
+    #     .set_layout(ov.Layout('NHWC'))
     
-    ppp.input().preprocess() \
-        .resize(ResizeAlgorithm.RESIZE_LINEAR, 360, 640) \
-        .convert_element_type(ov.Type.f32) \
-        .pad(
-            pads_begin=[0, 12, 0, 0],  
-            pads_end=[0, 12, 0, 0],    
-            value=[0.0],               
-            mode=PaddingMode.CONSTANT
-        ) \
-        .scale(255.0)  
+    # ppp.input().preprocess() \
+    #     .resize(ResizeAlgorithm.RESIZE_LINEAR, 360, 640) \
+    #     .convert_element_type(ov.Type.f32) \
+    #     .pad(
+    #         pads_begin=[0, 12, 0, 0],  
+    #         pads_end=[0, 12, 0, 0],    
+    #         value=[0.0],               
+    #         mode=PaddingMode.CONSTANT
+    #     ) \
+    #     .scale(255.0)  
 
-    # 4. 설정 적용된 모델 빌드
-    model = ppp.build()
+    # # 4. 설정 적용된 모델 빌드
+    # model = ppp.build()
 
     compiled_model = core.compile_model(model, device_name)
 
