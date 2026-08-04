@@ -222,9 +222,9 @@ class DecoderModule(nn.Module):
         return bboxes, cls_scores
 
 class CombinedModel(nn.Module):
-    def __init__(self):
+    def __init__(self, base_model):
         super().__init__()
-        self.base_model = DetectionModel()
+        self.base_model = base_model
         self.decoder = DecoderModule() 
         
     def forward(self, x):
@@ -232,8 +232,10 @@ class CombinedModel(nn.Module):
         return self.decoder(cls_pred, reg_pred)
     
 if __name__ == "__main__":
-    dummy = torch.randn(1, 3, 384, 640)  # 변환 시 Batch Size는 1 권장
-    model = CombinedModel().eval()  # 변환 시에는 eval() 상태 사용
+    dummy = torch.randn(1, 3, 384, 640)
+    base_model = DetectionModel(num_classes=1, reg_max=16)
+    base_model.load_state_dict(torch.load("./lib/detector/weight.pt", map_location="cpu"))
+    model = CombinedModel(base_model).eval()
 
     out = model(dummy)
     print("⚡ [검증 성공] 출력 텐서 Shape:", out[0].shape, out[1].shape)

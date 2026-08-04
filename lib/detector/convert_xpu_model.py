@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from datasets import ChamaeDataset, chamae_collate_fn, get_data, split_data
-from model import DetectionModel
+from model import DetectionModel, CombinedModel
 
 paired_path = get_data()
 train_path, val_path = split_data(paired_path)
@@ -29,8 +29,10 @@ print(
     f"✅ Calibration 데이터 준비 완료: {len(calibration_tensors)}개 (Shape: {calibration_tensors[0].shape})"
 )
 
-model = DetectionModel()
-model.load_state_dict(torch.load("./lib/detector/weight.pt", map_location="cpu"))
+base_model = DetectionModel(num_classes=1, reg_max=16)
+base_model.load_state_dict(torch.load("./lib/detector/weight.pt", map_location="cpu"))
+
+model = CombinedModel(base_model)
 model.eval()
 
 dummy_input = torch.randn(1, 3, 384, 640)
