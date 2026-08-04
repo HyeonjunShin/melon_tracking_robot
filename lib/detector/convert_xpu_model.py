@@ -47,7 +47,7 @@ print("🚀 INT8 NNCF Calibration 양자화 진행 중...")
 quantized_model = nncf.quantize(ov_model, nncf_dataset)
 
 
-ppp = PrePostProcessor(model)
+ppp = PrePostProcessor(quantized_model)
 ppp.input().model().set_layout(ov.Layout("NCHW"))
 
 ppp.input().tensor().set_shape([1, 720, 1280, 3]).set_element_type(
@@ -65,7 +65,7 @@ ppp.input().preprocess().resize(
     255.0
 )
 
-model = ppp.build()
+quantized_model = ppp.build()
 
 ov.save_model(quantized_model, "model_int8.xml")
 
