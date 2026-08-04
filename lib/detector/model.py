@@ -100,7 +100,7 @@ class StandardYOLOv8Head(nn.Module):
         return cls_all, reg_all
 
 
-class DualYOLOv8ChamaeModel(nn.Module):
+class DetectionModel(nn.Module):
     def __init__(self, num_classes=1, reg_max=16):
         super().__init__()
 
@@ -173,11 +173,69 @@ class DualYOLOv8ChamaeModel(nn.Module):
             return self.one2many_head(final_features), self.one2one_head(final_features)
         else:
             return self.one2one_head(final_features)
+class DecoderModule(nn.Module):
+    def __init__(self, reg_max=16):
+        super().__init__()
+        self.reg_max = reg_max
+        
+        CONF = [(8, 48, 80), (16, 24, 40), (32, 12, 20)]
+        
+        anchors_list = []
+        strides_list = []
+        
+        for stride, h, w in CONF:
+            grid_y, grid_x = torch.meshgrid(
+                torch.arange(h, dtype=torch.float32), 
+                torch.arange(w, dtype=torch.float32), 
+                indexing="ij"
+            )
+            
+            grid = torch.stack((grid_x, grid_y), dim=-1).view(-1, 2) + 0.5
+            anchors_list.append(grid)
+            
+            strides_list.append(torch.full((grid.size(0), 1), stride, dtype=torch.float32))
+            
+        anchors = torch.cat(anchors_list, dim=0)
+        strides = torch.cat(strides_list, dim=0)
+        
+        self.register_buffer("anchors", anchors)
+        self.register_buffer("strides", strides)
+        self.register_buffer("weights", torch.arange(reg_max, dtype=torch.float32))
 
+    def forward(self, cls_pred, reg_pred):
+        batch_size = reg_pred.size(0)
+        
+        reg_pred = reg_pred.view(batch_size, -1, 4, self.reg_max)
+        
+        softmax_reg = torch.softmax(reg_pred, dim=-1)
+        dist = torch.sum(softmax_reg * self.weights, dim=-1)
+        
+        x1 = (self.anchors[:, 0] - dist[..., 0]) * self.strides[:, 0]
+        y1 = (self.anchors[:, 1] - dist[..., 1]) * self.strides[:, 0]
+        x2 = (self.anchors[:, 0] + dist[..., 2]) * self.strides[:, 0]
+        y2 = (self.anchors[:, 1] + dist[..., 3]) * self.strides[:, 0]
+        
+        bboxes = torch.stack([x1, y1, x2, y2], dim=-1)
+        
+        cls_scores = torch.sigmoid(cls_pred)
+        
+        return bboxes, cls_scores
 
+class CombinedModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base_model = DetectionModel()
+        self.decoder = DecoderModule() 
+        
+    def forward(self, x):
+        cls_pred, reg_pred = self.base_model(x)
+        return self.decoder(cls_pred, reg_pred)
+    
 if __name__ == "__main__":
     dummy = torch.randn(1, 3, 384, 640)  # 변환 시 Batch Size는 1 권장
-    model = DualYOLOv8ChamaeModel().eval()  # 변환 시에는 eval() 상태 사용
+    model = CombinedModel().eval()  # 변환 시에는 eval() 상태 사용
 
     out = model(dummy)
     print("⚡ [검증 성공] 출력 텐서 Shape:", out[0].shape, out[1].shape)
+
+

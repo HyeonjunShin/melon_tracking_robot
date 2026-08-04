@@ -1,14 +1,14 @@
 import json
 import multiprocessing as mp
 import os
-import socket
 import time
 import cv2
 import numpy as np
 import openvino as ov
+from openvino.preprocess import PrePostProcessor, ResizeAlgorithm, PaddingMode
 
-from camera.gemini336 import SHM_NAME, LocklessBuffer, runner
-from tracker.tracker import KalmanFilter3D, draw_3d_tf_axis
+from lib.camera.gemini336 import LocklessBuffer, runner
+from lib.tracker.tracker import KalmanFilter3D, draw_3d_tf_axis
 
 INT8_MODEL_PATH = "model_int8.xml"
 CONF_THRES = 0.8
@@ -45,19 +45,15 @@ ANCHORS, STRIDES = generate_anchors()
 kf_tracker = KalmanFilter3D(dt=1 / 30.0)
 
 
-# ---------------------------------------------------------
-# 2. 전처리 & 후처리 (NumPy 기반)
-# ---------------------------------------------------------
-def preprocess_image(color_rgb):
-    """RGB Image -> Resize(360, 640) -> Pad(384, 640) -> Float32 [0, 1]"""
-    resized = cv2.resize(color_rgb, (640, 360), interpolation=cv2.INTER_LINEAR)
-    padded = cv2.copyMakeBorder(
-        resized, 12, 12, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0)
-    )
-    input_tensor = padded.astype(np.float32) / 255.0
-    input_tensor = np.transpose(input_tensor, (2, 0, 1))[None, ...]
-    return np.ascontiguousarray(input_tensor)
-
+# def preprocess_image(color_rgb):
+#     resized = cv2.resize(color_rgb, (640, 360), interpolation=cv2.INTER_LINEAR)
+#     padded = cv2.copyMakeBorder(
+#         resized, 12, 12, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0)
+#     )
+#     # input_tensor = padded.astype(np.float32) / 255.0
+#     # input_tensor = np.transpose(input_tensor, (2, 0, 1))[None, ...]
+#     # return np.ascontiguousarray(input_tensor)
+#     return padded[None, ...]
 
 def decode_bboxes(reg_pred):
     """DFL Softmax 및 Anchor 기반 BBox 좌표 복원"""
@@ -78,21 +74,16 @@ def decode_bboxes(reg_pred):
 
     return np.stack([x1, y1, x2, y2], axis=-1)
 
-
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
-
-# ---------------------------------------------------------
-# 3. 동기식 메인 파이프라인
-# ---------------------------------------------------------
 def main():
     mp.set_start_method("spawn", force=True)
     stop_signal = mp.Event()
 
     # 카메라 수신 프로세스용 Lockless Buffer 생성 및 시작
-    buffer = LocklessBuffer(name=SHM_NAME, is_owner=True)
-    camera_process = mp.Process(target=runner, args=(SHM_NAME, stop_signal))
+    buffer = LocklessBuffer(shm_name="test", is_owner=True)
+    camera_process = mp.Process(target=runner, args=("test", stop_signal))
     camera_process.start()
 
     core = ov.Core()
@@ -106,8 +97,31 @@ def main():
         buffer.close()
         return 1
 
-    ov_model = core.read_model(INT8_MODEL_PATH)
-    compiled_model = core.compile_model(ov_model, device_name)
+    model = core.read_model(INT8_MODEL_PATH)
+
+    ppp = PrePostProcessor(model)
+    ppp.input().model().set_layout(ov.Layout('NCHW'))
+
+    ppp.input().tensor() \
+        .set_shape([1, 720, 1280, 3]) \
+        .set_element_type(ov.Type.u8) \
+        .set_layout(ov.Layout('NHWC'))
+    
+    ppp.input().preprocess() \
+        .resize(ResizeAlgorithm.RESIZE_LINEAR, 360, 640) \
+        .convert_element_type(ov.Type.f32) \
+        .pad(
+            pads_begin=[0, 12, 0, 0],  
+            pads_end=[0, 12, 0, 0],    
+            value=[0.0],               
+            mode=PaddingMode.CONSTANT
+        ) \
+        .scale(255.0)  
+
+    # 4. 설정 적용된 모델 빌드
+    model = ppp.build()
+
+    compiled_model = core.compile_model(model, device_name)
 
     # 출력 레이어 바인딩 (순서 고정)
     output_0 = compiled_model.output(0)
@@ -133,18 +147,14 @@ def main():
             depth = current_frame.depth
             view = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
 
-            # 2. 전처리
-            input_tensor = preprocess_image(color)
-
-            # 3. [동기식 추론] 결과가 반환될 때까지 블로킹 대기
+            input_tensor = color[None, ...]
             results = compiled_model({0: input_tensor})
 
             cls_pred = results[output_0]
             reg_pred = results[output_1]
 
-            # Output Tensor Shape 매칭 (cls: scores, reg: bboxes)
-            if cls_pred.shape[-1] != 1 and cls_pred.shape[-1] != 5040:
-                cls_pred, reg_pred = reg_pred, cls_pred
+            # if cls_pred.shape[-1] != 1 and cls_pred.shape[-1] != 5040:
+                # cls_pred, reg_pred = reg_pred, cls_pred
 
             # 4. 후처리 및 디코딩 (즉시 계산)
             scores = sigmoid(cls_pred.squeeze())
@@ -184,11 +194,6 @@ def main():
                     "vel_mms": [float(vx), float(vy), float(vz)],
                     "is_valid": bool(is_updated),
                 }
-                sock.sendto(
-                    json.dumps(control_packet).encode("utf-8"),
-                    (CONTROL_IP, CONTROL_PORT),
-                )
-
                 # 3D TF 축 시각화
                 draw_3d_tf_axis(
                     img=view,
@@ -247,7 +252,6 @@ def main():
 
     finally:
         cv2.destroyAllWindows()
-        sock.close()
         stop_signal.set()
         camera_process.join(timeout=3)
         if camera_process.is_alive():

@@ -8,7 +8,10 @@ from pyorbbecsdk import (
     Pipeline, Config, Context, AlignFilter,
     OBSensorType, OBFormat, OBPropertyID, OBStreamType
 )
-from lib.camera.camera_shm import LocklessBuffer
+
+# --- Configuration Constants ---
+CURRENT_DIR = Path(__file__).resolve().parent
+PRESET_JSON_PATH = str((CURRENT_DIR / "gemini336_settings.json").resolve())
 
 CHECK_PARAMS = [
     ("color_auto_exposure", OBPropertyID.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "bool"),
@@ -33,17 +36,14 @@ CHECK_PARAMS = [
 ]
 
 class OrbbecCamera:
-    def __init__(self, device, color_shape, depth_shape, settings_path):
-        self.color_shape = color_shape
-        self.depth_shape = depth_shape
-        self.settings_path = settings_path
-
+    def __init__(self, device):
         self.device = device
         self.info = device.get_device_info()
         self.serial_number = self.info.get_serial_number()
         self.pipeline: Optional[Pipeline] = None
 
     def check_parameters(self):
+        """기존 check_camera_parameters 역할"""
         for label, prop_id, prop_type in CHECK_PARAMS:
             try:
                 if prop_type == "bool":
@@ -57,6 +57,7 @@ class OrbbecCamera:
                 print(f" 🛑 {label:<30} : [조회 실패 / 지원하지 않는 프로퍼티]")
 
     def print_intrinsics(self):
+        """기존 print_camera_intrinsics 역할"""
         if not self.pipeline:
             return
         try:
@@ -85,21 +86,25 @@ class OrbbecCamera:
             print(f" 🛑 내적 파라미터(Intrinsic) 조회 실패: {e}")
 
     def start(self):
+        json_path = Path(PRESET_JSON_PATH)
+        print(f"🔍 [Preset Check] 경로: {json_path}")
+        print(f"🔍 [Preset Check] 존재 여부: {json_path.exists()}, 크기: {json_path.stat().st_size if json_path.exists() else 0} bytes")
+
+        """기존 setting_device 순서 정확히 준수"""
+        # [순서 핵심 1] Pipeline 생성 및 Start 전에 반드시 Preset 먼저 로드!
         try:
-            self.device.load_preset_from_json_file(self.settings_path)
-            print(f"✅ 프리셋 로드 성공: {self.settings_path}")
+            self.device.load_preset_from_json_file(PRESET_JSON_PATH)
+            print(f"✅ 프리셋 로드 성공: {json_path.name}")
         except Exception as e:
             print(f"프리셋 로드 실패 ({self.serial_number}): {e}")
 
         # [순서 핵심 2] Pipeline 생성 및 스트림 프로필 설정
         self.pipeline = Pipeline(self.device)
         color_profiles = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-        color_profile = color_profiles.get_video_stream_profile(
-            self.color_shape[0], self.color_shape[1], OBFormat.RGB, 30)
+        color_profile = color_profiles.get_video_stream_profile(COLOR_WIDTH, COLOR_HEIGHT, OBFormat.RGB, COLOR_FPS)
 
         depth_profiles = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
-        depth_profile = depth_profiles.get_video_stream_profile(
-            self.depth_shape[0], self.depth_shape[1], OBFormat.Y16, 30)
+        depth_profile = depth_profiles.get_video_stream_profile(DEPTH_WIDTH, DEPTH_HEIGHT, OBFormat.Y16, DEPTH_FPS)
 
         config = Config()
         config.enable_stream(color_profile)
@@ -122,10 +127,8 @@ class OrbbecCamera:
 
 
 class CameraManager:
+    """카메라 멀티 관리 및 프로세스 실행기"""
     def __init__(self, shm_name: str):
-        current_dir = Path(__file__).resolve().parent
-        self.settings_path = str((current_dir / "gemini336_settings.json").resolve())
-
         self.shm_name = shm_name
         self.cameras: Dict[str, OrbbecCamera] = {}
         self.buffer: Optional[LocklessBuffer] = None
@@ -141,7 +144,6 @@ class CameraManager:
                     cam.stop()
                     del cam
                 print(f"  - {removed_list.get_device_name_by_index(i)} (SN: {serial_number})")
-                self.buffer.set_status(False)
 
         if added_list.get_count() > 0:
             print("Added the camera:")
@@ -153,11 +155,7 @@ class CameraManager:
 
                 print(f"[{i}] {device_name} (SN: {serial_number})")
                 try:
-
-                    cam = OrbbecCamera(device=device, 
-                        color_shape=(1280,720,3), 
-                        depth_shape=(1280,720,1), 
-                        settings_path=self.settings_path)
+                    cam = OrbbecCamera(device)
                     cam.start()
                     self.cameras[serial_number] = cam
                     print(f"[Success connection] {serial_number} ")
@@ -166,7 +164,7 @@ class CameraManager:
 
     def run(self, stop_signal: mp.Event):
         print("🎥 [Camera Runner] Lockless 버퍼 기반 스레드/프로세스 시작")
-        self.buffer = LocklessBuffer(shm_name=self.shm_name, is_owner=False)
+        self.buffer = LocklessBuffer(name=self.shm_name, is_owner=False)
 
         ctx = Context()
         ctx.set_device_changed_callback(self._on_device_changed)
@@ -179,10 +177,7 @@ class CameraManager:
                 serial_number = info.get_serial_number()
 
                 try:
-                    cam = OrbbecCamera(device=device, 
-                        color_shape=(1280,720,3), 
-                        depth_shape=(1280,720,1), 
-                        settings_path=self.settings_path)
+                    cam = OrbbecCamera(device)
                     cam.start()
                     self.cameras[serial_number] = cam
                     print(f"[Success connection] {serial_number} ")
@@ -212,10 +207,11 @@ class CameraManager:
                         if not color_frame or not depth_frame:
                             continue
 
-                        ts = depth_frame.get_global_timestamp_us()
+                        ts = float(color_frame.get_timestamp_us()) / 1_000_000.0
 
+                        # Lock 없이 즉시 쓰기
                         self.buffer.write(ts, color_frame.get_data(), depth_frame.get_data())
-                        self.buffer.set_status(True)
+
                     except Exception as e:
                         print(f"⚠️ 프레임 수신 중 장치 이탈 감지 ({serial_number}): {e}")
                         broken_cam = self.cameras.pop(serial_number, None)
@@ -244,60 +240,25 @@ def runner(shm_name, stop_signal):
 
 
 if __name__ == "__main__":
-    from camera_shm import LocklessBuffer
-    import multiprocessing as mp  # mp 정의 누락 대응
-    import cv2
-    
     mp.set_start_method("spawn", force=True)
-    
-    shm_name = "orbbec_frame_buffer"
-    main_buffer = LocklessBuffer(shm_name=shm_name, is_owner=True)
+
+    # 루트 컨트롤러에서 Shared Memory(Owner)와 Stop Event 제어
+    main_buffer = LocklessBuffer(name=SHM_NAME, is_owner=True)
     stop_signal = mp.Event()
 
-    cam_process = mp.Process(target=runner, args=(shm_name, stop_signal))
+    cam_process = mp.Process(target=runner, args=(SHM_NAME, stop_signal))
     cam_process.start()
 
-    prev_ts = None
     try:
-        print("🚀 [Main Controller] 카메라 프로세스 실행 중 (종료하려면 'q' 또는 Ctrl+C)")
+        print("🚀 [Main Controller] 카메라 프로세스 실행 중 (종료하려면 Ctrl+C)")
         while True:
-            if main_buffer.get_status():
-                frame = main_buffer.read_latest_frame()
-                if prev_ts == frame.timestamp:
-                    continue
-                prev_ts = frame.timestamp
-                
-                # 1. Color 프레임 가져오기 (이미 BGR 포맷이라고 가정)
-                color_img = frame.color
-                
-                # 2. Depth 프레임 전처리 (16비트 -> 8비트 시각화용 변환)
-                depth_img = frame.depth
-                # 0~5000mm(5m) 사이의 거리를 0~255 값으로 정규화 (카메라 스펙에 맞게 조절 가능)
-                depth_clipped = np.clip(depth_img, 0, 5000)
-                depth_normalized = cv2.normalize(depth_clipped, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                # 깊이감을 보기 좋게 JET 컬러맵 적용 (가까운 곳은 빨간색/파란색 등)
-                depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
-
-                # 3. OpenCV 윈도우 표시
-                cv2.imshow("Color Stream", color_img)
-                cv2.imshow("Depth Stream", depth_colored)
-
-                # 키 입력 처리 ('q' 누르면 안전 종료)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-                    
+            time.sleep(1)
     except KeyboardInterrupt:
         print("\n종료 신호 수신. 카메라 프로세스를 정리합니다...")
-        
-    finally:
-        # 예외가 발생하더라도 자원이 확실히 해제되도록 보장
-        print("자원 해제 및 프로세스 종료 중...")
         stop_signal.set()
         cam_process.join(timeout=3)
         if cam_process.is_alive():
             cam_process.terminate()
 
-        # OpenCV 윈도우 닫기
-        cv2.destroyAllWindows()
         main_buffer.close()
         print("모든 자원이 정상 해제되었습니다.")

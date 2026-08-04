@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from datasets import ChamaeDataset, chamae_collate_fn, get_data, split_data
-from model import DualYOLOv8ChamaeModel
+from model import DetectionModel
 
 paired_path = get_data()
 train_path, val_path = split_data(paired_path)
@@ -29,7 +29,7 @@ print(
     f"✅ Calibration 데이터 준비 완료: {len(calibration_tensors)}개 (Shape: {calibration_tensors[0].shape})"
 )
 
-model = DualYOLOv8ChamaeModel()
+model = DetectionModel()
 model.load_state_dict(torch.load("./lib/detector/weight.pt", map_location="cpu"))
 model.eval()
 

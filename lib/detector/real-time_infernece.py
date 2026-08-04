@@ -9,7 +9,7 @@ import multiprocessing as mp
 import torchvision.transforms.v2 as v2
 
 from lib.detector.utiles import BBoxDecoder
-from lib.detector.model import DualYOLOv8ChamaeModel
+from lib.detector.model import DetectionModel
 from lib.tracker.tracker import KalmanFilter3D, draw_3d_tf_axis
 from lib.camera.gemini336 import runner, LocklessBuffer, SHM_NAME
 
@@ -96,7 +96,7 @@ def main():
     p = mp.Process(target=runner, args=(SHM_NAME, stop_signal))
     p.start()
 
-    model = DualYOLOv8ChamaeModel(num_classes=NUM_CLASSES).to(device)
+    model = DetectionModel(num_classes=NUM_CLASSES).to(device)
     print(f"\n📦 모델 가중치({MODEL_PATH}) 로드 중...")
     if os.path.exists(MODEL_PATH):
         checkpoint = torch.load(MODEL_PATH, map_location=device)
