@@ -11,7 +11,7 @@ import torchvision.transforms.v2 as v2
 from lib.detector.utiles import BBoxDecoder
 from lib.detector.model import DetectionModel
 from lib.tracker.tracker import KalmanFilter3D, draw_3d_tf_axis
-from lib.camera.gemini336 import runner, LocklessBuffer, SHM_NAME
+from lib.camera.gemini336 import camera_runner, CameraBuffer, SHM_NAME
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -90,10 +90,10 @@ def main():
     stop_signal = mp.Event()
 
     # ⭐️ [수정 2] LocklessBuffer 생성 (메인 프로세스가 Owner가 되어 메모리 할당 관리)
-    buffer = LocklessBuffer(name=SHM_NAME, is_owner=True)
+    buffer = CameraBuffer(name=SHM_NAME, is_owner=True)
 
     # ⭐️ [수정 3] lock 인자 제거하고 runner 호출
-    p = mp.Process(target=runner, args=(SHM_NAME, stop_signal))
+    p = mp.Process(target=camera_runner, args=(SHM_NAME, stop_signal))
     p.start()
 
     model = DetectionModel(num_classes=NUM_CLASSES).to(device)

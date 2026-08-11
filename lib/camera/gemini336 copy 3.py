@@ -18,84 +18,135 @@ from pyorbbecsdk import (
 # from lib.camera.camera_shm import CameraBuffer
 from camera_shm import CameraBuffer
 
-check_params = [
-    ("color_auto_exposure", OBPropertyID.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "bool"),
-    ("color_auto_white_balance", OBPropertyID.OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL, "bool"),
-    ("color_backlight_compensation", OBPropertyID.OB_PROP_COLOR_BACKLIGHT_COMPENSATION_INT, "int"),
-    ("color_brightness", OBPropertyID.OB_PROP_COLOR_BRIGHTNESS_INT, "int"),
-    ("color_contrast", OBPropertyID.OB_PROP_COLOR_CONTRAST_INT, "int"),
-    ("color_exposure_time", OBPropertyID.OB_PROP_COLOR_EXPOSURE_INT, "int"),
-    ("color_gain", OBPropertyID.OB_PROP_COLOR_GAIN_INT, "int"),
-    ("color_gamma", OBPropertyID.OB_PROP_COLOR_GAMMA_INT, "int"),
-    ("color_hue", OBPropertyID.OB_PROP_COLOR_HUE_INT, "int"),
-    ("color_power_line_frequency", OBPropertyID.OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, "int"),
-    ("color_saturation", OBPropertyID.OB_PROP_COLOR_SATURATION_INT, "int"),
-    ("color_sharpness", OBPropertyID.OB_PROP_COLOR_SHARPNESS_INT, "int"),
-    ("color_white_balance", OBPropertyID.OB_PROP_COLOR_WHITE_BALANCE_INT, "int"),
-    ("depth_auto_exposure", OBPropertyID.OB_PROP_DEPTH_AUTO_EXPOSURE_BOOL, "bool"),
-    ("depth_exposure_time", OBPropertyID.OB_PROP_DEPTH_EXPOSURE_INT, "int"),
-    ("depth_gain", OBPropertyID.OB_PROP_DEPTH_GAIN_INT, "int"),
-    ("laser_state", OBPropertyID.OB_PROP_LASER_CONTROL_INT, "int"),
-    ("laser_power_level", OBPropertyID.OB_PROP_LASER_POWER_LEVEL_CONTROL_INT, "int"),
-    ("HW_align", OBPropertyID.OB_PROP_DEPTH_ALIGN_HARDWARE_BOOL, "bool"),
-]
 
-
-def print_intrinsics(pipeline):
-    if not pipeline:
-        return
-    try:
-        param = pipeline.get_camera_param()
-
-        c_intrin = param.rgb_intrinsic
-        print("\n" + "=" * 50)
-        print(" [Color Camera Intrinsic Parameters]")
-        print(f"  ▶ Resolution : {c_intrin.width} x {c_intrin.height}")
-        print(f"  ▶ Focal Length (fx, fy) : ({c_intrin.fx:.4f}, {c_intrin.fy:.4f})")
-        print(f"  ▶ Principal Point (cx, cy) : ({c_intrin.cx:.4f}, {c_intrin.cy:.4f})")
-        c_dist = param.rgb_distortion
-        print(
-            f"  ▶ Distortion Model : {c_dist.k1} {c_dist.k2} {c_dist.k3} {c_dist.k4} {c_dist.k5} {c_dist.k6} {c_dist.p1} {c_dist.p2}"
-        )
-
-        d_intrin = param.depth_intrinsic
-        print("-" * 50)
-        print(" [Depth Camera Intrinsic Parameters]")
-        print(f"  ▶ Resolution : {d_intrin.width} x {d_intrin.height}")
-        print(f"  ▶ Focal Length (fx, fy) : ({d_intrin.fx:.4f}, {d_intrin.fy:.4f})")
-        print(f"  ▶ Principal Point (cx, cy) : ({d_intrin.cx:.4f}, {d_intrin.cy:.4f})")
-        d_dist = param.depth_distortion
-        print(
-            f"  ▶ Distortion Model : {d_dist.k1} {d_dist.k2} {d_dist.k3} {d_dist.k4} {d_dist.k5} {d_dist.k6} {d_dist.p1} {d_dist.p2}"
-        )
-        print("=" * 50 + "\n")
-
-    except Exception as e:
-        print(f" 🛑 내적 파라미터(Intrinsic) 조회 실패: {e}")
-
-
-def check_parameters(device):
-    for label, prop_id, prop_type in check_params:
-        try:
-            if prop_type == "bool":
-                val = device.get_bool_property(prop_id)
-            elif prop_type == "float":
-                val = device.get_float_property(prop_id)
-            else:
-                val = device.get_int_property(prop_id)
-            print(f" ▶ {label:<30} : {val}")
-        except Exception:
-            print(f" 🛑 {label:<30} : [조회 실패 / 지원하지 않는 프로퍼티]")
-
-
-class Gemini336:
-    def __init__(self, color_shape, depth_shape, settings_path):
+class OrbbecCamera:
+    def __init__(self, device, color_shape, depth_shape, settings_path):
         self.color_shape = color_shape
         self.depth_shape = depth_shape
         self.settings_path = settings_path
 
-        self.device = None
-        self.pipeline = None
+        self.device = device
+        self.info = device.get_device_info()
+        self.serial_number = self.info.get_serial_number()
+        self.pipeline: Optional[Pipeline] = None
+
+        self.check_params = [
+            ("color_auto_exposure", OBPropertyID.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "bool"),
+            ("color_auto_white_balance", OBPropertyID.OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL, "bool"),
+            ("color_backlight_compensation", OBPropertyID.OB_PROP_COLOR_BACKLIGHT_COMPENSATION_INT, "int"),
+            ("color_brightness", OBPropertyID.OB_PROP_COLOR_BRIGHTNESS_INT, "int"),
+            ("color_contrast", OBPropertyID.OB_PROP_COLOR_CONTRAST_INT, "int"),
+            ("color_exposure_time", OBPropertyID.OB_PROP_COLOR_EXPOSURE_INT, "int"),
+            ("color_gain", OBPropertyID.OB_PROP_COLOR_GAIN_INT, "int"),
+            ("color_gamma", OBPropertyID.OB_PROP_COLOR_GAMMA_INT, "int"),
+            ("color_hue", OBPropertyID.OB_PROP_COLOR_HUE_INT, "int"),
+            ("color_power_line_frequency", OBPropertyID.OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, "int"),
+            ("color_saturation", OBPropertyID.OB_PROP_COLOR_SATURATION_INT, "int"),
+            ("color_sharpness", OBPropertyID.OB_PROP_COLOR_SHARPNESS_INT, "int"),
+            ("color_white_balance", OBPropertyID.OB_PROP_COLOR_WHITE_BALANCE_INT, "int"),
+            ("depth_auto_exposure", OBPropertyID.OB_PROP_DEPTH_AUTO_EXPOSURE_BOOL, "bool"),
+            ("depth_exposure_time", OBPropertyID.OB_PROP_DEPTH_EXPOSURE_INT, "int"),
+            ("depth_gain", OBPropertyID.OB_PROP_DEPTH_GAIN_INT, "int"),
+            ("laser_state", OBPropertyID.OB_PROP_LASER_CONTROL_INT, "int"),
+            ("laser_power_level", OBPropertyID.OB_PROP_LASER_POWER_LEVEL_CONTROL_INT, "int"),
+            ("HW_align", OBPropertyID.OB_PROP_DEPTH_ALIGN_HARDWARE_BOOL, "bool"),
+        ]
+
+    def check_parameters(self):
+        for label, prop_id, prop_type in self.check_params:
+            try:
+                if prop_type == "bool":
+                    val = self.device.get_bool_property(prop_id)
+                elif prop_type == "float":
+                    val = self.device.get_float_property(prop_id)
+                else:
+                    val = self.device.get_int_property(prop_id)
+                print(f" ▶ {label:<30} : {val}")
+            except Exception:
+                print(f" 🛑 {label:<30} : [조회 실패 / 지원하지 않는 프로퍼티]")
+
+    def print_intrinsics(self):
+        if not self.pipeline:
+            return
+        try:
+            param = self.pipeline.get_camera_param()
+
+            c_intrin = param.rgb_intrinsic
+            print("\n" + "=" * 50)
+            print(" [Color Camera Intrinsic Parameters]")
+            print(f"  ▶ Resolution : {c_intrin.width} x {c_intrin.height}")
+            print(f"  ▶ Focal Length (fx, fy) : ({c_intrin.fx:.4f}, {c_intrin.fy:.4f})")
+            print(f"  ▶ Principal Point (cx, cy) : ({c_intrin.cx:.4f}, {c_intrin.cy:.4f})")
+            c_dist = param.rgb_distortion
+            print(
+                f"  ▶ Distortion Model : {c_dist.k1} {c_dist.k2} {c_dist.k3} {c_dist.k4} {c_dist.k5} {c_dist.k6} {c_dist.p1} {c_dist.p2}"
+            )
+
+            d_intrin = param.depth_intrinsic
+            print("-" * 50)
+            print(" [Depth Camera Intrinsic Parameters]")
+            print(f"  ▶ Resolution : {d_intrin.width} x {d_intrin.height}")
+            print(f"  ▶ Focal Length (fx, fy) : ({d_intrin.fx:.4f}, {d_intrin.fy:.4f})")
+            print(f"  ▶ Principal Point (cx, cy) : ({d_intrin.cx:.4f}, {d_intrin.cy:.4f})")
+            d_dist = param.depth_distortion
+            print(
+                f"  ▶ Distortion Model : {d_dist.k1} {d_dist.k2} {d_dist.k3} {d_dist.k4} {d_dist.k5} {d_dist.k6} {d_dist.p1} {d_dist.p2}"
+            )
+            print("=" * 50 + "\n")
+
+        except Exception as e:
+            print(f" 🛑 내적 파라미터(Intrinsic) 조회 실패: {e}")
+
+    def start(self):
+        try:
+            self.device.load_preset_from_json_file(self.settings_path)
+            print(f"✅ 프리셋 로드 성공: {self.settings_path}")
+        except Exception as e:
+            print(f"프리셋 로드 실패 ({self.serial_number}): {e}")
+
+        # [순서 핵심 2] Pipeline 생성 및 스트림 프로필 설정
+        self.pipeline = Pipeline(self.device)
+        color_profiles = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+        color_profile = color_profiles.get_video_stream_profile(
+            self.color_shape[0], self.color_shape[1], OBFormat.RGB, 30
+        )
+
+        depth_profiles = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+        depth_profile = depth_profiles.get_video_stream_profile(
+            self.depth_shape[0], self.depth_shape[1], OBFormat.Y16, 30
+        )
+
+        config = Config()
+        config.enable_stream(color_profile)
+        config.enable_stream(depth_profile)
+
+        # [순서 핵심 3] Pipeline Start
+        self.pipeline.start(config)
+
+        # [순서 핵심 4] Intrinsic 및 Parameter 출력
+        self.print_intrinsics()
+        self.check_parameters()
+
+    def stop(self):
+        if self.pipeline:
+            try:
+                self.pipeline.stop()
+            except Exception:
+                pass
+            self.pipeline = None
+
+
+class CameraManager:
+    def __init__(self, shm_name=None):
+        current_dir = Path(__file__).resolve().parent
+        self.settings_path = str((current_dir / "gemini336_settings.json").resolve())
+        self.camera = None
+        self.align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
+
+        if shm_name is None:
+            self.buffer = None
+        else:
+            self.buffer = CameraBuffer(shm_name=shm_name, is_owner=False)
 
         self.ctx = Context()
         self.ctx.set_device_changed_callback(self._on_device_changed)
@@ -143,87 +194,32 @@ class Gemini336:
     def found_preconn_camera(self):
         device_list = self.ctx.query_devices()
         if device_list.get_count() > 0:
+            # for i in range(device_list.get_count()):
             device = device_list.get_device_by_index(0)
             info = device.get_device_info()
             serial_number = info.get_serial_number()
 
             try:
-                pipeline = self.start_camera(device)
-
-                print_intrinsics(pipeline)
-                check_parameters(device)
-
-                self.pipeline = pipeline
-                self.device = device
+                camera = OrbbecCamera(
+                    device=device,
+                    color_shape=(1280, 720, 3),
+                    depth_shape=(1280, 720, 1),
+                    settings_path=self.settings_path,
+                )
+                camera.start()
+                # self.cameras[serial_number] = cam
+                self.camera = camera
                 print(f"[Success connection] {serial_number} ")
             except Exception as e:
                 print(f"[Error the camera] {serial_number}: {e}")
 
-    def start_camera(self, device):
-        try:
-            device.load_preset_from_json_file(self.settings_path)
-            print(f"✅ 프리셋 로드 성공: {self.settings_path}")
-        except Exception as e:
-            print(f"프리셋 로드 실패 ({self.serial_number}): {e}")
-
-        pipeline = Pipeline(device)
-        color_profiles = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-        color_profile = color_profiles.get_video_stream_profile(
-            self.color_shape[0], self.color_shape[1], OBFormat.RGB, 30
-        )
-
-        depth_profiles = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
-        depth_profile = depth_profiles.get_video_stream_profile(
-            self.depth_shape[0], self.depth_shape[1], OBFormat.Y16, 30
-        )
-
-        config = Config()
-        config.enable_stream(color_profile)
-        config.enable_stream(depth_profile)
-
-        pipeline.start(config)
-
-        print_intrinsics(pipeline)
-        check_parameters(device)
-
-        return pipeline
-
     def get_frame(self):
-        if self.pipeline is not None:
-            frame = self.pipeline.wait_for_frames(100)
+        if self.camera is not None:
+            frame = self.camera.pipeline.wait_for_frames(100)
             return frame
+
         else:
             return None
-
-
-class OrbbecCamera:
-    def __init__(self, device, color_shape, depth_shape, settings_path):
-
-        self.device = device
-        self.info = device.get_device_info()
-        self.serial_number = self.info.get_serial_number()
-        self.pipeline: Optional[Pipeline] = None
-
-    def stop(self):
-        if self.pipeline:
-            try:
-                self.pipeline.stop()
-            except Exception:
-                pass
-            self.pipeline = None
-
-
-class CameraManager:
-    def __init__(self, shm_name=None):
-        current_dir = Path(__file__).resolve().parent
-        self.settings_path = str((current_dir / "gemini336_settings.json").resolve())
-        self.camera = None
-        self.align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
-
-        if shm_name is None:
-            self.buffer = None
-        else:
-            self.buffer = CameraBuffer(shm_name=shm_name, is_owner=False)
 
 
 #     def runner(self, stop_signal: mp.Event):
@@ -314,37 +310,35 @@ class CameraManager:
 
 
 if __name__ == "__main__":
-    current_dir = Path(__file__).resolve().parent
-    settings_path = str((current_dir / "gemini336_settings.json").resolve())
-
-    camera = Gemini336(color_shape=(1280, 720, 3), depth_shape=(1280, 720, 1), settings_path=settings_path)
+    camera = CameraManager()
 
     while True:
         frame = camera.get_frame()
         if frame is None:
             continue
         color = frame.get_color_frame()
-        depth = frame.get_depth_frame()
         if color is None:
             continue
         print(
             color,
             color.get_system_timestamp_us(),
-            depth.get_global_timestamp_us(),
+            color.get_timestamp_us(),
+            color.get_global_timestamp_us(),
             time.time_ns(),
+            color.get_global_timestamp_us() - time.time_ns() // 1000,
         )
 
-    # import multiprocessing as mp  # mp 정의 누락 대응
-    # import cv2
+        # import multiprocessing as mp  # mp 정의 누락 대응
+        # import cv2
 
-    # mp.set_start_method("spawn", force=True)
-    # stop_signal = mp.Event()
+        # mp.set_start_method("spawn", force=True)
+        # stop_signal = mp.Event()
 
-    # shm_name = "orbbec_frame_buffer"
-    # camera_buffer = CameraBuffer(shm_name=shm_name, is_owner=True)
+        # shm_name = "orbbec_frame_buffer"
+        # camera_buffer = CameraBuffer(shm_name=shm_name, is_owner=True)
 
-    # camera_process = mp.Process(
-    # print(frame.get_global_timestamp_us())
+        # camera_process = mp.Process(
+        # print(frame.get_global_timestamp_us())
     #     target=camera_runner, args=(shm_name, stop_signal)
     # )
     # camera_process.start()

@@ -1,71 +1,147 @@
 import multiprocessing as mp
-from lib.camera.gemini336 import LocklessBuffer, runner
+from lib.camera.gemini336 import CameraBuffer, camera_runner
+from lib.detector.detection import detector_runner, DetectorBuffer
 import cv2
 import time
 import numpy as np
 
 
-import torchvision.transforms.v2 as v2
-
-
 def main():
-    shm_name = "orbbec_frame_buffer"
-
     mp.set_start_method("spawn", force=True)
     stop_signal = mp.Event()
-    camera_buffer = LocklessBuffer(shm_name=shm_name, is_owner=True)
-    camera_process = mp.Process(target=runner, args=(shm_name, stop_signal))
+
+    camera_shm_name = "orbbec_frame_buffer"
+    camera_buffer = CameraBuffer(shm_name=camera_shm_name, is_owner=True)
+    camera_process = mp.Process(target=camera_runner, args=(camera_shm_name, stop_signal))
     camera_process.start()
 
-    prev_ts = None
+    detector_shm_name = "tracker_buffer"
+    detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=True)
+    detector_process = mp.Process(
+        target=detector_runner,
+        args=(camera_shm_name, detector_shm_name, stop_signal),
+    )
+    detector_process.start()
+
     try:
-        print("🚀 [Main Controller] 카메라 프로세스 실행 중 (종료하려면 'q' 또는 Ctrl+C)")
+        print("🚀 [Main Controller] 카메라 및 비전 파이프라인 시각화 실행 중 ('q': 종료)")
+
+        # 카메라 내적 파라미터 (실제 카메라 스펙/캘리브레이션 값 적용)
+        # compute_6d_pose에서 사용한 FX, FY, CX, CY와 동일한 값을 사용해야 합니다.
+        FX, FY = 623.0682, 623.0682
+        CX, CY = 639.5000, 356.0000
+
+        prev_ts = 0
+
         while True:
             if camera_buffer.get_status():
                 frame = camera_buffer.read_latest_frame()
                 if prev_ts == frame.timestamp:
+                    time.sleep(0.001)  # CPU Overhead 방지
                     continue
                 prev_ts = frame.timestamp
-                
-                # 1. Color 프레임 가져오기 (이미 BGR 포맷이라고 가정)
-                color_img = frame.color
+
+                # 1. Color 프레임 가져오기 (RGB -> BGR)
+                color_img = frame.color.copy()
                 color_img = cv2.cvtColor(color_img, cv2.COLOR_RGB2BGR)
-                
-                # 2. Depth 프레임 전처리 (16비트 -> 8비트 시각화용 변환)
-                depth_img = frame.depth
-                # 0~5000mm(5m) 사이의 거리를 0~255 값으로 정규화 (카메라 스펙에 맞게 조절 가능)
-                depth_clipped = np.clip(depth_img, 0, 5000)
-                depth_normalized = cv2.normalize(depth_clipped, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                # 깊이감을 보기 좋게 JET 컬러맵 적용 (가까운 곳은 빨간색/파란색 등)
-                depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
 
-                # 3. OpenCV 윈도우 표시
-                cv2.imshow("Color Stream", color_img)
-                cv2.imshow("Depth Stream", depth_colored)
+                # 2. Detector 결과 가져오기 및 시각화
+                if detector_buffer.get_status():
+                    detector_ret = detector_buffer.read_latest()
 
-                # 키 입력 처리 ('q' 누르면 안전 종료)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    # 객체가 검출된 상태(detected == True)인 경우에만 렌더링
+                    if detector_ret.detected:
+                        x1, y1, x2, y2 = map(int, detector_ret.bbox)
+                        score = detector_ret.score
+                        pose = detector_ret.pose  # [X, Y, Z, qx, qy, qz, qw]
+                        x, y, z = pose[:3]
+
+                        # A. Bounding Box 시각화 (초록색 상자)
+                        cv2.rectangle(color_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                        # B. ROI 중앙 60% 영역 표시 (옵션: Pose 추출 ROI 가시화)
+                        w, h = x2 - x1, y2 - y1
+                        scale = np.sqrt(0.6)
+                        mw, mh = int((w * (1 - scale)) / 2), int((h * (1 - scale)) / 2)
+                        cv2.rectangle(
+                            color_img,
+                            (x1 + mw, y1 + mh),
+                            (x2 - mw, y2 - mh),
+                            (0, 255, 255),
+                            1,
+                        )
+
+                        # C. Score 및 3D Position(X, Y, Z) 텍스트 오버레이
+                        info_text = f"Score: {score:.2f} | XYZ: [{x:.2f}, {y:.2f}, {z:.2f}]m"
+
+                        # 텍스트 배경 상자 (가독성 향상)
+                        (text_w, text_h), _ = cv2.getTextSize(info_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        cv2.rectangle(
+                            color_img,
+                            (x1, max(0, y1 - 22)),
+                            (x1 + text_w, y1),
+                            (0, 255, 0),
+                            -1,
+                        )
+                        cv2.putText(
+                            color_img,
+                            info_text,
+                            (x1, max(12, y1 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 0, 0),
+                            1,
+                            cv2.LINE_AA,
+                        )
+
+                        # D. 3D Orientation Coordinate Axis 투영
+                        draw_3d_axis(
+                            color_img,
+                            pose_7d=pose,
+                            fx=FX,
+                            fy=FY,
+                            cx=CX,
+                            cy=CY,
+                            axis_length=0.1,  # 10cm 크기의 축 표시
+                        )
+                    else:
+                        # 미인식 상태(detected == False) 시 화면 우상단 경고 표시
+                        cv2.putText(
+                            color_img,
+                            "SEARCHING...",
+                            (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 0, 255),
+                            2,
+                        )
+
+                # 3. 화면 출력
+                cv2.imshow("Color Stream (BBox & 3D Pose)", color_img)
+
+                # 'q' 키 입력 시 안전 종료
+                if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
-                    
+
     except KeyboardInterrupt:
         print("\n종료 신호 수신. 카메라 프로세스를 정리합니다...")
-        
+
     finally:
-        # 예외가 발생하더라도 자원이 확실히 해제되도록 보장
         print("자원 해제 및 프로세스 종료 중...")
         stop_signal.set()
+
         camera_process.join(timeout=3)
         if camera_process.is_alive():
             camera_process.terminate()
 
-        # OpenCV 윈도우 닫기
+        detector_process.join(timeout=3)
+        if detector_process.is_alive():
+            detector_process.terminate()
+
         cv2.destroyAllWindows()
         camera_buffer.close()
+        detector_buffer.close()
         print("모든 자원이 정상 해제되었습니다.")
-
-
-
-
     # prev_ts = 0.0
     # try:
     #     while True:
@@ -75,6 +151,8 @@ def main():
     #             # time.sleep(0.002)
     #             # continue
     #         print(current_frame.timestamp)import time
+
+
 # import numpy as np
 # import multiprocessing as mp
 # from multiprocessing import shared_memory
@@ -364,111 +442,110 @@ def main():
 #         buffer.close()
 #         print("모든 자원 정리 완료.")
 
-    #         # prev_ts = current_frame.timestamp
+#         # prev_ts = current_frame.timestamp
 
-    #         # color = current_frame.color
-    #         # depth = current_frame.depth
-    #         # view = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+#         # color = current_frame.color
+#         # depth = current_frame.depth
+#         # view = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
 
-    #         # input_tensor = transform(color)[None, ...]
-    #         # input_tensor = input_tensor.to(device)
+#         # input_tensor = transform(color)[None, ...]
+#         # input_tensor = input_tensor.to(device)
 
-    #         # with torch.inference_mode():
-    #         #     cls_pred, reg_pred = model(input_tensor)
+#         # with torch.inference_mode():
+#         #     cls_pred, reg_pred = model(input_tensor)
 
-    #         #     decoded_bboxes = decoder.decode(reg_pred)[0]
-    #         #     pred_scores = cls_pred[0].sigmoid().squeeze(-1)
+#         #     decoded_bboxes = decoder.decode(reg_pred)[0]
+#         #     pred_scores = cls_pred[0].sigmoid().squeeze(-1)
 
-    #         #     keep = pred_scores > CONF_THRES
-    #         #     final_boxes = decoded_bboxes[keep]
-    #         #     final_scores = pred_scores[keep]
+#         #     keep = pred_scores > CONF_THRES
+#         #     final_boxes = decoded_bboxes[keep]
+#         #     final_scores = pred_scores[keep]
 
-    #         # measured_3d = None
-    #         # if len(final_boxes) > 0:
-    #         #     final_boxes = final_boxes.clone()
-    #         #     final_boxes[:, [0, 2]] = final_boxes[:, [0, 2]] * 2
-    #         #     final_boxes[:, [1, 3]] = (final_boxes[:, [1, 3]] - 12) * 2
+#         # measured_3d = None
+#         # if len(final_boxes) > 0:
+#         #     final_boxes = final_boxes.clone()
+#         #     final_boxes[:, [0, 2]] = final_boxes[:, [0, 2]] * 2
+#         #     final_boxes[:, [1, 3]] = (final_boxes[:, [1, 3]] - 12) * 2
 
-    #         #     best_idx = torch.argmax(final_scores)
-    #         #     best_box = final_boxes[best_idx].tolist()
+#         #     best_idx = torch.argmax(final_scores)
+#         #     best_box = final_boxes[best_idx].tolist()
 
-    #         #     # 3D Centroid (Xc, Yc, Zc) 측정
-    #         #     measured_3d = kf_tracker.compute_3d_centroid(
-    #         #         depth, best_box, FX, FY, CX, CY
-    #         #     )
+#         #     # 3D Centroid (Xc, Yc, Zc) 측정
+#         #     measured_3d = kf_tracker.compute_3d_centroid(
+#         #         depth, best_box, FX, FY, CX, CY
+#         #     )
 
-    #         #     x1, y1, x2, y2 = map(int, best_box)
-    #         #     cv2.rectangle(view, (x1, y1), (x2, y2), (80, 80, 80), 1)
+#         #     x1, y1, x2, y2 = map(int, best_box)
+#         #     cv2.rectangle(view, (x1, y1), (x2, y2), (80, 80, 80), 1)
 
-    #         # state, is_updated = kf_tracker.update(measured_3d)
+#         # state, is_updated = kf_tracker.update(measured_3d)
 
-    #         # if kf_tracker.is_initialized:
-    #         #     xc, yc, zc, vx, vy, vz = state
+#         # if kf_tracker.is_initialized:
+#         #     xc, yc, zc, vx, vy, vz = state
 
-    #         #     # 3D TF 축 시각화
-    #         #     draw_3d_tf_axis(
-    #         #         img=view,
-    #         #         center_3d=(xc, yc, zc),
-    #         #         fx=FX,
-    #         #         fy=FY,
-    #         #         cx=CX,
-    #         #         cy=CY,
-    #         #         axis_length=80.0,
-    #         #         thickness=2,
-    #         #     )
+#         #     # 3D TF 축 시각화
+#         #     draw_3d_tf_axis(
+#         #         img=view,
+#         #         center_3d=(xc, yc, zc),
+#         #         fx=FX,
+#         #         fy=FY,
+#         #         cx=CX,
+#         #         cy=CY,
+#         #         axis_length=80.0,
+#         #         thickness=2,
+#         #     )
 
-    #         #     # 3D Pos & Speed 텍스트
-    #         #     pos_text = f"TF [X:{xc:.0f}, Y:{yc:.0f}, Z:{zc:.0f}] mm"
-    #         #     vel_text = f"V [Vx:{vx:.0f}, Vy:{vy:.0f}, Vz:{vz:.0f}] mm/s"
-    #         #     cv2.putText(
-    #         #         view,
-    #         #         pos_text,
-    #         #         (10, 30),
-    #         #         cv2.FONT_HERSHEY_SIMPLEX,
-    #         #         0.6,
-    #         #         (0, 255, 255),
-    #         #         2,
-    #         #         cv2.LINE_AA,
-    #         #     )
-    #         #     cv2.putText(
-    #         #         view,
-    #         #         vel_text,
-    #         #         (10, 60),
-    #         #         cv2.FONT_HERSHEY_SIMPLEX,
-    #         #         0.6,
-    #         #         (255, 255, 0),
-    #         #         2,
-    #         #         cv2.LINE_AA,
-    #         #     )
+#         #     # 3D Pos & Speed 텍스트
+#         #     pos_text = f"TF [X:{xc:.0f}, Y:{yc:.0f}, Z:{zc:.0f}] mm"
+#         #     vel_text = f"V [Vx:{vx:.0f}, Vy:{vy:.0f}, Vz:{vz:.0f}] mm/s"
+#         #     cv2.putText(
+#         #         view,
+#         #         pos_text,
+#         #         (10, 30),
+#         #         cv2.FONT_HERSHEY_SIMPLEX,
+#         #         0.6,
+#         #         (0, 255, 255),
+#         #         2,
+#         #         cv2.LINE_AA,
+#         #     )
+#         #     cv2.putText(
+#         #         view,
+#         #         vel_text,
+#         #         (10, 60),
+#         #         cv2.FONT_HERSHEY_SIMPLEX,
+#         #         0.6,
+#         #         (255, 255, 0),
+#         #         2,
+#         #         cv2.LINE_AA,
+#         #     )
 
-    #         # curr_time = time.time()
-    #         # fps = 0.9 * fps + 0.1 * (1.0 / (curr_time - prev_time + 1e-6))
-    #         # prev_time = curr_time
-    #         # cv2.putText(
-    #         #     view,
-    #         #     f"FPS: {fps:.1f}",
-    #         #     (15, 90),
-    #         #     cv2.FONT_HERSHEY_SIMPLEX,
-    #         #     0.8,
-    #         #     (0, 0, 255),
-    #         #     2,
-    #         #     cv2.LINE_AA,
-    #         # )
-    #         # cv2.imshow("color", view)
-    #         # key = cv2.waitKey(1)
+#         # curr_time = time.time()
+#         # fps = 0.9 * fps + 0.1 * (1.0 / (curr_time - prev_time + 1e-6))
+#         # prev_time = curr_time
+#         # cv2.putText(
+#         #     view,
+#         #     f"FPS: {fps:.1f}",
+#         #     (15, 90),
+#         #     cv2.FONT_HERSHEY_SIMPLEX,
+#         #     0.8,
+#         #     (0, 0, 255),
+#         #     2,
+#         #     cv2.LINE_AA,
+#         # )
+#         # cv2.imshow("color", view)
+#         # key = cv2.waitKey(1)
 
-    #         # if key == ord("q"):
-    #         #     break
+#         # if key == ord("q"):
+#         #     break
 
-    # finally:
-    #     # cv2.destroyAllWindows()
-    #     stop_signal.set()
-    #     camera_process.join(timeout=3)
-    #     if camera_process.is_alive():
-    #         camera_process.terminate()
-    #     buffer.close()
-    #     print("[메인] 시스템이 안전하게 종료되었습니다.")
-
+# finally:
+#     # cv2.destroyAllWindows()
+#     stop_signal.set()
+#     camera_process.join(timeout=3)
+#     if camera_process.is_alive():
+#         camera_process.terminate()
+#     buffer.close()
+#     print("[메인] 시스템이 안전하게 종료되었습니다.")
 
 
 if __name__ == "__main__":

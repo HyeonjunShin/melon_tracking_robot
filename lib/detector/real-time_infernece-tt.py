@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import openvino as ov
 
-from camera.gemini336 import SHM_NAME, LocklessBuffer, runner
+from camera.gemini336 import SHM_NAME, CameraBuffer, camera_runner
 from tracker.tracker import KalmanFilter3D, draw_3d_tf_axis
 
 INT8_MODEL_PATH = "model_int8.xml"
@@ -91,8 +91,8 @@ def main():
     stop_signal = mp.Event()
 
     # 카메라 수신 프로세스용 Lockless Buffer 생성 및 시작
-    buffer = LocklessBuffer(name=SHM_NAME, is_owner=True)
-    camera_process = mp.Process(target=runner, args=(SHM_NAME, stop_signal))
+    buffer = CameraBuffer(name=SHM_NAME, is_owner=True)
+    camera_process = mp.Process(target=camera_runner, args=(SHM_NAME, stop_signal))
     camera_process.start()
 
     core = ov.Core()
