@@ -16,7 +16,7 @@ from pyorbbecsdk import (
 )
 
 # from lib.camera.camera_shm import CameraBuffer
-from camera_shm import CameraBuffer
+from lib.camera.buffer import CameraBuffer
 
 
 class OrbbecCamera:

@@ -1,7 +1,7 @@
 import numpy as np
 import openvino as ov
 import os
-from lib.camera.camera_shm import CameraBuffer
+from lib.camera.buffer import CameraBuffer
 from lib.detector.model import DetectionModel
 from multiprocessing import shared_memory
 from dataclasses import dataclass
@@ -22,7 +22,9 @@ class TrackObj:
     detected: bool
     score: float
     bbox: np.ndarray
-    pose: np.ndarray
+    centroid: np.ndarray  # [X, Y, Z] (3D)
+    velocity: np.ndarray  # [Vx, Vy, Vz] (m/s)
+    rotation: np.ndarray  # [qx, qy, qz, qw] (4D Quaternion)
 
 
 class DetectorBuffer:
@@ -44,7 +46,10 @@ class DetectorBuffer:
         self.detected_pad_bytes = 7
         self.score_bytes = np.dtype(np.float64).itemsize  # 8
         self.bbox_bytes = np.dtype(np.float64).itemsize * 4  # 32
-        self.pose_bytes = np.dtype(np.float64).itemsize * 7  # 56
+
+        self.centroid_bytes = np.dtype(np.float64).itemsize * 3  # 24
+        self.velocity_bytes = np.dtype(np.float64).itemsize * 3  # 24
+        self.rotation_bytes = np.dtype(np.float64).itemsize * 4  # 32
 
         self.slot_bytes = (
             self.timestamp_bytes
@@ -52,8 +57,10 @@ class DetectorBuffer:
             + self.detected_pad_bytes
             + self.score_bytes
             + self.bbox_bytes
-            + self.pose_bytes
-        )  # Total: 112 bytes
+            + self.centroid_bytes
+            + self.velocity_bytes
+            + self.rotation_bytes
+        )  # Total: 136 bytes
 
         self.total_bytes = self.header_bytes + (2 * self.slot_bytes)
 
@@ -70,49 +77,36 @@ class DetectorBuffer:
                 size=self.total_bytes,
             )
         else:
-            self.shm = shared_memory.SharedMemory(
-                name=self.shm_name, create=False
-            )
+            self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
 
         # Header Mapping
-        self.status_arr = np.ndarray(
-            (1,), dtype=np.bool_, buffer=self.shm.buf, offset=0
-        )
-        self.write_index_arr = np.ndarray(
-            (1,), dtype=np.int64, buffer=self.shm.buf, offset=8
-        )
+        self.status_arr = np.ndarray((1,), dtype=np.bool_, buffer=self.shm.buf, offset=0)
+        self.write_index_arr = np.ndarray((1,), dtype=np.int64, buffer=self.shm.buf, offset=8)
 
         # Double Buffer Slots Mapping
         self.slots = []
         for i in range(2):
             slot_offset = self.header_bytes + (i * self.slot_bytes)
 
-            timestamp_arr = np.ndarray(
-                (1,), dtype=np.uint64, buffer=self.shm.buf, offset=slot_offset
-            )
+            timestamp_arr = np.ndarray((1,), dtype=np.uint64, buffer=self.shm.buf, offset=slot_offset)
 
             offset_curr = slot_offset + self.timestamp_bytes
-            detected_arr = np.ndarray(
-                (1,), dtype=np.bool_, buffer=self.shm.buf, offset=offset_curr
-            )
+            detected_arr = np.ndarray((1,), dtype=np.bool_, buffer=self.shm.buf, offset=offset_curr)
 
             offset_curr += self.detected_bytes + self.detected_pad_bytes
-            score_arr = np.ndarray(
-                (1,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr
-            )
+            score_arr = np.ndarray((1,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
 
             offset_curr += self.score_bytes
-            bbox_arr = np.ndarray(
-                (4,),
-                dtype=np.float64,
-                buffer=self.shm.buf,
-                offset=offset_curr,  # (5,) -> (4,) 수정 완료
-            )
+            bbox_arr = np.ndarray((4,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
 
             offset_curr += self.bbox_bytes
-            pose_arr = np.ndarray(
-                (7,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr
-            )
+            centroid_arr = np.ndarray((3,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
+
+            offset_curr += self.centroid_bytes
+            velocity_arr = np.ndarray((3,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
+
+            offset_curr += self.velocity_bytes
+            rotation_arr = np.ndarray((4,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
 
             self.slots.append(
                 {
@@ -120,7 +114,9 @@ class DetectorBuffer:
                     "detected": detected_arr,
                     "score": score_arr,
                     "bbox": bbox_arr,
-                    "pose": pose_arr,
+                    "velocity": velocity_arr,
+                    "centroid": centroid_arr,
+                    "rotation": rotation_arr,
                 }
             )
 
@@ -130,12 +126,18 @@ class DetectorBuffer:
         detected: bool,
         score: float = 0.0,
         bbox: np.ndarray = None,
-        pose: np.ndarray = None,
+        centroid: np.ndarray = None,
+        velocity: np.ndarray = None,
+        rotation: np.ndarray = None,
     ):
         if bbox is None:
             bbox = np.zeros((4,), dtype=np.float64)
-        if pose is None:
-            pose = np.zeros((7,), dtype=np.float64)
+        if centroid is None:
+            centroid = np.zeros((3,), dtype=np.float64)
+        if velocity is None:
+            velocity = np.zeros((3,), dtype=np.float64)
+        if rotation is None:
+            rotation = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
 
         current_idx = int(self.write_index_arr[0])
         next_idx = 1 - current_idx
@@ -145,11 +147,11 @@ class DetectorBuffer:
         target_slot["detected"][0] = detected
         target_slot["score"][0] = score
 
-        # 안전한 1D 배열 복사
         np.copyto(target_slot["bbox"], bbox.reshape(-1))
-        np.copyto(target_slot["pose"], pose.reshape(-1))
+        np.copyto(target_slot["centroid"], centroid.reshape(-1))
+        np.copyto(target_slot["velocity"], velocity.reshape(-1))
+        np.copyto(target_slot["rotation"], rotation.reshape(-1))
 
-        # Write Index 스위칭 (Atomic-like operation)
         self.write_index_arr[0] = next_idx
 
     def read_latest(self) -> TrackObj:
@@ -161,7 +163,9 @@ class DetectorBuffer:
             detected=bool(slot["detected"][0]),
             score=float(slot["score"][0]),
             bbox=slot["bbox"].copy(),
-            pose=slot["pose"].copy(),
+            centroid=slot["centroid"].copy(),
+            velocity=slot["velocity"].copy(),
+            rotation=slot["rotation"].copy(),
         )
 
     def set_status(self, is_good: bool):
@@ -171,6 +175,14 @@ class DetectorBuffer:
         return bool(self.status_arr[0])
 
     def close(self):
+        del self.slots
+        del self.status_arr
+        del self.write_index_arr
+
+        import gc
+
+        gc.collect()
+
         self.shm.close()
         if self.is_owner:
             try:
@@ -220,7 +232,7 @@ class Detector:
         )
 
 
-def compute_6d_pose(depth, bbox, fx, fy, cx, cy, crop_ratio=0.6):
+def compute_pose(depth, bbox, fx, fy, cx, cy, crop_ratio=0.6):
     """
     BBox 중앙 60% ROI 영역의 Depth 데이터를 3D Centroid(X, Y, Z)로 복원 후
     카메라 정면 고정 회전 쿼터니언 [0, 0, 0, 1]을 부여하여 반환하는 함수 (프로토타입용)
@@ -281,118 +293,35 @@ def compute_6d_pose(depth, bbox, fx, fy, cx, cy, crop_ratio=0.6):
     centroid = np.array([xc, yc, zc], dtype=np.float64)
 
     # 7. 고정 쿼터니언 지정 (Roll=0, Pitch=0, Yaw=0 -> [qx=0, qy=0, qz=0, qw=1])
-    fixed_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    rotation = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    return (centroid, rotation)
+    # print(False if len(final_scores) == 0 else True)
+    # print(final_scores)
+    # print(final_bboxes)
 
-    # [X, Y, Z, 0, 0, 0, 1] 7D Vector 반환
-    return np.concatenate([centroid, fixed_quat])
+    # measured_3d = None
+    # if len(final_bboxes) > 0 and len(final_scores) > 0:
+    #     final_bboxes[:, [0, 2]] = final_bboxes[:, [0, 2]] * 2
+    #     final_bboxes[:, [1, 3]] = (final_bboxes[:, [1, 3]] - 12) * 2
 
+    #     best_idx = np.argmax(final_scores)
+    #     best_box = final_bboxes[best_idx].tolist()
 
-def detector_runner(
-    camera_shm_name,
-    detector_shm_name,
-    stop_signal,
-):
-    import time
-    import numpy as np
-    from lib.tracker.tracker import (
-        KalmanFilter3D,
-    )
+    #     # Depth 기반 3D Centroid 측정
+    #     measured_3d = kf_tracker.compute_3d_centroid(
+    #         depth, best_box, FX, FY, CX, CY
+    #     )
 
-    camera_buffer = CameraBuffer(shm_name=camera_shm_name, is_owner=False)
-    detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=False)
+    #     x1, y1, x2, y2 = map(int, best_box)
+    #     print(x1, y1, x2, y2)
 
-    detector = Detector()
-    FX, FY = (693.3102, 693.4061)
-    CX, CY = (639.6599, 365.0724)
+    # state, is_updated = kf_tracker.update(measured_3d)
 
-    prev_ts = 0
-    try:
-        while not stop_signal.is_set():
-            if not camera_buffer.get_status():
-                time.sleep(0.001)
-                detector_buffer.set_status(False)
-                continue
-            else:
-                detector_buffer.set_status(True)
-
-            current_frame = camera_buffer.read_latest_frame()
-            if prev_ts == current_frame.timestamp:
-                continue
-
-            prev_ts = current_frame.timestamp
-            color = current_frame.color
-            depth = current_frame.depth
-
-            scores, bboxes = detector.detect(color)
-
-            if len(scores) == 0:
-                detector_buffer.write(
-                    timestamp=prev_ts,
-                    detected=False,
-                    score=0.0,
-                    bbox=np.zeros((4,), dtype=np.float64),
-                    pose=np.zeros((7,), dtype=np.float64),
-                )
-                continue
-
-            best_idx = np.argmax(scores)
-            best_score = float(scores[best_idx])
-            best_bbox = bboxes[best_idx].copy()
-
-            best_bbox[[0, 2]] = best_bbox[[0, 2]] * 2
-            best_bbox[[1, 3]] = (best_bbox[[1, 3]] - 12) * 2
-
-            pose_7d = compute_6d_pose(
-                depth, best_bbox, FX, FY, CX, CY, crop_ratio=0.6
-            )
-            if pose_7d is None:
-                detector_buffer.write(
-                    timestamp=prev_ts,
-                    detected=False,
-                    score=best_score,
-                    bbox=best_bbox.astype(np.float64),
-                    pose=np.zeros((7,), dtype=np.float64),
-                )
-                continue
-
-            detector_buffer.write(
-                timestamp=prev_ts,
-                detected=True,
-                score=best_score,
-                bbox=best_bbox.astype(np.float64),
-                pose=pose_7d.astype(np.float64),
-            )
-
-        # print(False if len(final_scores) == 0 else True)
-        # print(final_scores)
-        # print(final_bboxes)
-
-        # measured_3d = None
-        # if len(final_bboxes) > 0 and len(final_scores) > 0:
-        #     final_bboxes[:, [0, 2]] = final_bboxes[:, [0, 2]] * 2
-        #     final_bboxes[:, [1, 3]] = (final_bboxes[:, [1, 3]] - 12) * 2
-
-        #     best_idx = np.argmax(final_scores)
-        #     best_box = final_bboxes[best_idx].tolist()
-
-        #     # Depth 기반 3D Centroid 측정
-        #     measured_3d = kf_tracker.compute_3d_centroid(
-        #         depth, best_box, FX, FY, CX, CY
-        #     )
-
-        #     x1, y1, x2, y2 = map(int, best_box)
-        #     print(x1, y1, x2, y2)
-
-        # state, is_updated = kf_tracker.update(measured_3d)
-
-        # if kf_tracker.is_initialized:
-        #     xc, yc, zc, vx, vy, vz = state
-        #     detector_buffer.write(prev_ts, np.array([xc, yc, zc, vx, vy, vz], dtype=np.float64))
-        #     detector_buffer.set_status(True)
-        # pos_text = f"TF [X:{xc:.2f}, Y:{yc:.2f}, Z:{zc:.2f}] mm"
-        # vel_text = f"V [Vx:{vx:.2f}, Vy:{vy:.2f}, Vz:{vz:.2f}] mm/s"
-        # print(pos_text)
-        # print(vel_text)
-    finally:
-        detector_buffer.set_status(False)
-        detector_buffer.close()
+    # if kf_tracker.is_initialized:
+    #     xc, yc, zc, vx, vy, vz = state
+    #     detector_buffer.write(prev_ts, np.array([xc, yc, zc, vx, vy, vz], dtype=np.float64))
+    #     detector_buffer.set_status(True)
+    # pos_text = f"TF [X:{xc:.2f}, Y:{yc:.2f}, Z:{zc:.2f}] mm"
+    # vel_text = f"V [Vx:{vx:.2f}, Vy:{vy:.2f}, Vz:{vz:.2f}] mm/s"
+    # print(pos_text)
+    # print(vel_text)

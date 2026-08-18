@@ -1,24 +1,31 @@
+import cv2
 import numpy as np
 import torchvision.transforms.v2 as v2
 from scipy.spatial.transform import Rotation as R
 
 
-def draw_3d_axis(img, pose_7d, fx, fy, cx, cy, axis_length=0.1):
+def draw_3d_axis(img, centroid, rotation, fx, fy, cx, cy, axis_length=0.1):
     """
-    3D Pose (X, Y, Z, qx, qy, qz, qw)를 입력받아 RGB 3D 좌표축을 이미지에 렌더링
+    3D Centroid (X, Y, Z)와 Rotation Quaternion (qx, qy, qz, qw)를
+    입력받아 RGB 3D 좌표축을 이미지에 렌더링
     """
-    # 1. 값이 0으로 채워진 경우 스킵
-    if np.all(pose_7d == 0):
+    # 1. Centroid 입력 검증 (None이거나 0으로만 이루어진 경우 스킵)
+    if centroid is None or np.all(centroid == 0):
         return
 
-    tvec = pose_7d[:3].copy()  # [X, Y, Z]
-    quat = pose_7d[3:].copy()  # [qx, qy, qz, qw]
+    tvec = np.array(centroid, dtype=np.float64).copy()  # [X, Y, Z]
 
-    # [디버그/보정] Z값이 10 이상이면 mm 단위로 판단하여 m(미터) 단위로 스케일 변환 및 축 길이 자동 조절
+    # Rotation 입력 검증 및 기본값 처리
+    if rotation is None:
+        quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    else:
+        quat = np.array(rotation, dtype=np.float64).copy()  # [qx, qy, qz, qw]
+
+    # [디버그/보정] Z값이 10 이상이면 mm 단위로 판단하여 m(미터) 단위로 스케일 변환
     if tvec[2] > 10.0:
         tvec /= 1000.0  # mm -> m 변환
 
-    # Quaternion 검증 (Norm이 0에 가까우면 기본 단위 쿼터니언으로 대체)
+    # Quaternion 검증 (Norm이 0에 가까우면 항등 쿼터니언으로 대체)
     quat_norm = np.linalg.norm(quat)
     if quat_norm < 1e-6:
         quat = np.array([0.0, 0.0, 0.0, 1.0])
@@ -44,7 +51,6 @@ def draw_3d_axis(img, pose_7d, fx, fy, cx, cy, axis_length=0.1):
 
     # Z 좌표가 0 이하(카메라 뒤쪽)인 경우 스킵
     if np.any(axes_transformed[:, 2] <= 0):
-        # print(f"[DEBUG] Z <= 0 발생: {axes_transformed[:, 2]}") # 필요시 주석 해제
         return
 
     # Pinhole Camera Model Projection (3D -> 2D Pixel)
@@ -57,10 +63,10 @@ def draw_3d_axis(img, pose_7d, fx, fy, cx, cy, axis_length=0.1):
     pt_y = tuple(pts_2d[2])
     pt_z = tuple(pts_2d[3])
 
-    # [디버그] 중심 원 그리기 (위치 잡히는지 확인용)
+    # 중심 원 그리기
     cv2.circle(img, origin, 5, (0, 255, 255), -1)
 
-    # 3D 좌표축 선 그리기 (두께 3으로 강화)
+    # 3D 좌표축 선 그리기
     cv2.line(img, origin, pt_x, (0, 0, 255), 3)  # X-axis: RED
     cv2.line(img, origin, pt_y, (0, 255, 0), 3)  # Y-axis: GREEN
-    cv2.line(img, origin, pt_z, (255, 0, 0), 3)  # Z-axis: BLUE  # Z-axis: BLUE
+    cv2.line(img, origin, pt_z, (255, 0, 0), 3)  # Z-axis: BLUE

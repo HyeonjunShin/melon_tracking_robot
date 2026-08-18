@@ -1,33 +1,198 @@
-import multiprocessing as mp
-from lib.camera.gemini336 import CameraBuffer, camera_runner
-from lib.detector.detection import detector_runner, DetectorBuffer
 import cv2
 import time
 import numpy as np
+import multiprocessing as mp
+from utils import draw_3d_axis
+
+from lib.camera.gemini336 import Gemini336
+from lib.camera.buffer import CameraBuffer
+
+from lib.detector.detection import Detector, compute_pose
+from lib.detector.detection import DetectorBuffer
+
+from lib.tracker.tracker import CentroidTracker3D
+
+
+def camera_runner(
+    camera_shm_name,
+    stop_signal,
+    frame_ready_signal,
+    color_shape=(1280, 720, 3),
+    depth_shape=(1280, 720, 1),
+):
+    buffer = CameraBuffer(
+        shm_name=camera_shm_name,
+        is_owner=False,
+        color_shape=color_shape,
+        depth_shape=depth_shape,
+    )
+
+    # current_dir = Path(__file__).resolve().parent
+    # settings_path = str((current_dir / "gemini336_settings.json").resolve())
+    settings_path = "./gemini336_settings.json"
+    camera = Gemini336(color_shape=color_shape, depth_shape=depth_shape, settings_path=settings_path)
+
+    while not stop_signal.is_set():
+        loop_start = time.perf_counter()
+
+        frame = camera.get_frame()
+        if frame is None:
+            buffer.set_status(False)
+            continue
+        color = frame.get_color_frame()
+        depth = frame.get_depth_frame()
+        if color is None or depth is None:
+            buffer.set_status(False)
+            continue
+        buffer.set_status(True)
+
+        timestamp = depth.get_global_timestamp_us()
+        color_data = color.get_data()
+        depth_data = depth.get_data()
+        process_end = time.perf_counter()
+
+        buffer.write(timestamp, color_data, depth_data)
+        frame_ready_signal.set()
+
+        loop_end = time.perf_counter()
+        proc_time_ms = (process_end - loop_start) * 1000
+        total_time_ms = (loop_end - loop_start) * 1000
+
+        # print(
+        #     f"[카메라 처리]: {proc_time_ms:.2f} ms | [전체 루프]: {total_time_ms:.2f} ms (FPS: {1000/total_time_ms:.1f})"
+        # )
+
+
+def detector_runner(
+    camera_shm_name,
+    detector_shm_name,
+    stop_signal,
+    frame_ready_signal,
+):
+    camera_buffer = CameraBuffer(shm_name=camera_shm_name, is_owner=False)
+    detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=False)
+
+    detector = Detector()
+    FX, FY = (693.3102, 693.4061)
+    CX, CY = (639.6599, 365.0724)
+
+    tracker = CentroidTracker3D()
+
+    prev_ts = 0
+    try:
+        while not stop_signal.is_set():
+            if not frame_ready_signal.wait(timeout=0.05):
+                continue
+            frame_ready_signal.clear()
+
+            loop_start = time.perf_counter()
+
+            if not camera_buffer.get_status():
+                detector_buffer.set_status(False)
+                continue
+            else:
+                detector_buffer.set_status(True)
+
+            current_frame = camera_buffer.read_latest_frame()
+
+            if prev_ts == current_frame.timestamp:
+                continue
+
+            prev_ts = current_frame.timestamp
+            frame_time_sec = prev_ts / 1_000_000.0
+
+            # 공유 메모리 충돌 방지를 위한 데이터 로컬 복사
+            color = current_frame.color.copy()
+            depth = current_frame.depth.copy()
+
+            # --- Detection 연산 수행 ---
+            scores, bboxes = detector.detect(color)
+
+            if len(scores) == 0:
+                pred_centroid, pred_velocity, _ = tracker.update(z_centroid=None, current_time=frame_time_sec)
+
+                detector_buffer.write(
+                    timestamp=prev_ts,
+                    detected=False,
+                    score=0.0,
+                    bbox=np.zeros((4,), dtype=np.float64),
+                    centroid=pred_centroid,
+                    velocity=pred_velocity,
+                    rotation=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
+                )
+            else:
+                best_idx = np.argmax(scores)
+                best_score = float(scores[best_idx])
+                best_bbox = bboxes[best_idx].copy()
+
+                best_bbox[[0, 2]] = best_bbox[[0, 2]] * 2
+                best_bbox[[1, 3]] = (best_bbox[[1, 3]] - 12) * 2
+
+                centroid, rotation = compute_pose(depth, best_bbox, FX, FY, CX, CY, crop_ratio=0.6)
+                if centroid is None:
+                    pred_centroid, pred_velocity, _ = tracker.update(
+                        z_centroid=centroid, current_time=frame_time_sec
+                    )
+                    detector_buffer.write(
+                        timestamp=prev_ts,
+                        detected=False,
+                        score=best_score,
+                        bbox=best_bbox.astype(np.float64),
+                        centroid=pred_centroid,
+                        velocity=pred_velocity,
+                        rotation=rotation,
+                    )
+                else:
+                    pred_centroid, pred_velocity, _ = tracker.update(
+                        z_centroid=centroid, current_time=frame_time_sec
+                    )
+                    detector_buffer.write(
+                        timestamp=prev_ts,
+                        detected=True,
+                        score=best_score,
+                        bbox=best_bbox.astype(np.float64),
+                        centroid=pred_centroid,
+                        velocity=pred_velocity,
+                        rotation=rotation,
+                    )
+
+            loop_end = time.perf_counter()
+            proc_time_ms = (loop_end - loop_start) * 1000
+            print(f"[디텍터 연산]: {proc_time_ms:.2f} ms (이벤트 대기 완료 후 순수 처리 시간)")
+
+    finally:
+        detector_buffer.set_status(False)
+        detector_buffer.close()
+
+
+def tracking_runner(detector_shm_name, stop_signal):
+    detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=False)
+
+    while not stop_signal.is_set():
+        if detector_buffer.get_status():
+            continue
 
 
 def main():
     mp.set_start_method("spawn", force=True)
     stop_signal = mp.Event()
+    frame_ready_signal = mp.Event()
 
-    camera_shm_name = "orbbec_frame_buffer"
+    camera_shm_name = "camera_buffer"
     camera_buffer = CameraBuffer(shm_name=camera_shm_name, is_owner=True)
-    camera_process = mp.Process(target=camera_runner, args=(camera_shm_name, stop_signal))
+    camera_process = mp.Process(target=camera_runner, args=(camera_shm_name, stop_signal, frame_ready_signal))
     camera_process.start()
 
-    detector_shm_name = "tracker_buffer"
+    detector_shm_name = "detection_buffer"
     detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=True)
     detector_process = mp.Process(
-        target=detector_runner,
-        args=(camera_shm_name, detector_shm_name, stop_signal),
+        target=detector_runner, args=(camera_shm_name, detector_shm_name, stop_signal, frame_ready_signal)
     )
     detector_process.start()
 
     try:
         print("🚀 [Main Controller] 카메라 및 비전 파이프라인 시각화 실행 중 ('q': 종료)")
 
-        # 카메라 내적 파라미터 (실제 카메라 스펙/캘리브레이션 값 적용)
-        # compute_6d_pose에서 사용한 FX, FY, CX, CY와 동일한 값을 사용해야 합니다.
         FX, FY = 623.0682, 623.0682
         CX, CY = 639.5000, 356.0000
 
@@ -40,95 +205,183 @@ def main():
                     time.sleep(0.001)  # CPU Overhead 방지
                     continue
                 prev_ts = frame.timestamp
+            else:
+                continue
+            color_img = cv2.cvtColor(frame.color, cv2.COLOR_RGB2BGR)
 
-                # 1. Color 프레임 가져오기 (RGB -> BGR)
-                color_img = frame.color.copy()
-                color_img = cv2.cvtColor(color_img, cv2.COLOR_RGB2BGR)
+            if detector_buffer.get_status():
+                detector_ret = detector_buffer.read_latest()
 
-                # 2. Detector 결과 가져오기 및 시각화
-                if detector_buffer.get_status():
-                    detector_ret = detector_buffer.read_latest()
+                centroid = detector_ret.centroid  # [X, Y, Z] (m)
+                velocity = detector_ret.velocity  # [Vx, Vy, Vz] (m/s)
+                rotation = detector_ret.rotation
 
-                    # 객체가 검출된 상태(detected == True)인 경우에만 렌더링
-                    if detector_ret.detected:
+                x, y, z = centroid
+                vx, vy, vz = velocity
+                speed = np.linalg.norm(velocity)  # 속도 크기 스칼라 (m/s)
+
+                # ----------------------------------------------------------------------
+                # 1. 디텍터가 실제로 객체를 감지한 경우 (Active Detection)
+                # ----------------------------------------------------------------------
+                if detector_ret.detected:
+                    x1, y1, x2, y2 = map(int, detector_ret.bbox)
+                    score = detector_ret.score
+
+                    # A. Bounding Box 시각화 (초록색 상자)
+                    cv2.rectangle(color_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                    # B. ROI 중앙 60% 영역 표시
+                    w, h = x2 - x1, y2 - y1
+                    scale = np.sqrt(0.6)
+                    mw, mh = int((w * (1 - scale)) / 2), int((h * (1 - scale)) / 2)
+                    cv2.rectangle(
+                        color_img,
+                        (x1 + mw, y1 + mh),
+                        (x2 - mw, y2 - mh),
+                        (0, 255, 255),
+                        1,
+                    )
+
+                    # C. BBox 상단 라벨 (Score 및 상태)
+                    info_text = f"DETECTED | Score: {score:.2f}"
+                    (text_w, text_h), _ = cv2.getTextSize(info_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    cv2.rectangle(
+                        color_img,
+                        (x1, max(0, y1 - 22)),
+                        (x1 + text_w, y1),
+                        (0, 255, 0),
+                        -1,
+                    )
+                    cv2.putText(
+                        color_img,
+                        info_text,
+                        (x1, max(12, y1 - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 0, 0),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+                    # D. 화면 좌상단 3D 위치 및 속도 종합 오버레이 패널
+                    pos_text = f"[3D POS]  X: {x:+.2f}m | Y: {y:+.2f}m | Z: {z:+.2f}m"
+                    vel_text = f"[3D VEL]  Vx: {vx:+.2f}m/s | Vy: {vy:+.2f}m/s | Vz: {vz:+.2f}m/s (Speed: {speed:.2f}m/s)"
+
+                    # 배경 검은색 반투명 박스 (가독성 향상)
+                    cv2.rectangle(color_img, (10, 10), (620, 75), (0, 0, 0), -1)
+                    cv2.rectangle(color_img, (10, 10), (620, 75), (0, 255, 0), 1)
+
+                    cv2.putText(
+                        color_img,
+                        pos_text,
+                        (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 0),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        color_img,
+                        vel_text,
+                        (20, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+                    # E. 3D Orientation Axis 투영
+                    draw_3d_axis(
+                        color_img,
+                        centroid=centroid,
+                        rotation=rotation,
+                        fx=FX,
+                        fy=FY,
+                        cx=CX,
+                        cy=CY,
+                        axis_length=0.1,
+                    )
+
+                # ----------------------------------------------------------------------
+                # 2. 디텍션은 놓쳤으나, 칼만 필터가 추적(Predict) 중인 경우
+                # ----------------------------------------------------------------------
+                elif not np.all(centroid == 0):
+                    pos_text = f"[PREDICT POS] X: {x:+.2f}m | Y: {y:+.2f}m | Z: {z:+.2f}m"
+                    vel_text = f"[PREDICT VEL] Vx: {vx:+.2f}m/s | Vy: {vy:+.2f}m/s | Vz: {vz:+.2f}m/s (Speed: {speed:.2f}m/s)"
+
+                    # 주황색 경고 테두리 패널
+                    cv2.rectangle(color_img, (10, 10), (650, 75), (0, 0, 0), -1)
+                    cv2.rectangle(color_img, (10, 10), (650, 75), (0, 165, 255), 1)
+
+                    cv2.putText(
+                        color_img,
+                        pos_text,
+                        (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 165, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        color_img,
+                        vel_text,
+                        (20, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+                    # 이전 Bounding Box 주황색 표시
+                    if not np.all(detector_ret.bbox == 0):
                         x1, y1, x2, y2 = map(int, detector_ret.bbox)
-                        score = detector_ret.score
-                        pose = detector_ret.pose  # [X, Y, Z, qx, qy, qz, qw]
-                        x, y, z = pose[:3]
+                        cv2.rectangle(color_img, (x1, y1), (x2, y2), (0, 165, 255), 1)
 
-                        # A. Bounding Box 시각화 (초록색 상자)
-                        cv2.rectangle(color_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    # 예측 위치에 3D 좌표축 투영
+                    draw_3d_axis(
+                        color_img,
+                        centroid=centroid,
+                        rotation=rotation,
+                        fx=FX,
+                        fy=FY,
+                        cx=CX,
+                        cy=CY,
+                        axis_length=0.1,
+                    )
 
-                        # B. ROI 중앙 60% 영역 표시 (옵션: Pose 추출 ROI 가시화)
-                        w, h = x2 - x1, y2 - y1
-                        scale = np.sqrt(0.6)
-                        mw, mh = int((w * (1 - scale)) / 2), int((h * (1 - scale)) / 2)
-                        cv2.rectangle(
-                            color_img,
-                            (x1 + mw, y1 + mh),
-                            (x2 - mw, y2 - mh),
-                            (0, 255, 255),
-                            1,
-                        )
+                # ----------------------------------------------------------------------
+                # 3. 아예 추적 상태가 아닌 경우 (초기화 전 또는 미인식)
+                # ----------------------------------------------------------------------
+                else:
+                    cv2.rectangle(color_img, (10, 10), (220, 45), (0, 0, 0), -1)
+                    cv2.putText(
+                        color_img,
+                        "SEARCHING...",
+                        (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        (0, 0, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
 
-                        # C. Score 및 3D Position(X, Y, Z) 텍스트 오버레이
-                        info_text = f"Score: {score:.2f} | XYZ: [{x:.2f}, {y:.2f}, {z:.2f}]m"
+            # 3. 화면 출력
+            cv2.imshow("Color Stream (BBox & 3D Pose)", color_img)
 
-                        # 텍스트 배경 상자 (가독성 향상)
-                        (text_w, text_h), _ = cv2.getTextSize(info_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                        cv2.rectangle(
-                            color_img,
-                            (x1, max(0, y1 - 22)),
-                            (x1 + text_w, y1),
-                            (0, 255, 0),
-                            -1,
-                        )
-                        cv2.putText(
-                            color_img,
-                            info_text,
-                            (x1, max(12, y1 - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 0, 0),
-                            1,
-                            cv2.LINE_AA,
-                        )
-
-                        # D. 3D Orientation Coordinate Axis 투영
-                        draw_3d_axis(
-                            color_img,
-                            pose_7d=pose,
-                            fx=FX,
-                            fy=FY,
-                            cx=CX,
-                            cy=CY,
-                            axis_length=0.1,  # 10cm 크기의 축 표시
-                        )
-                    else:
-                        # 미인식 상태(detected == False) 시 화면 우상단 경고 표시
-                        cv2.putText(
-                            color_img,
-                            "SEARCHING...",
-                            (20, 40),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,
-                            (0, 0, 255),
-                            2,
-                        )
-
-                # 3. 화면 출력
-                cv2.imshow("Color Stream (BBox & 3D Pose)", color_img)
-
-                # 'q' 키 입력 시 안전 종료
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+            # 'q' 키 입력 시 안전 종료
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
     except KeyboardInterrupt:
         print("\n종료 신호 수신. 카메라 프로세스를 정리합니다...")
+        stop_signal.set()
 
     finally:
         print("자원 해제 및 프로세스 종료 중...")
-        stop_signal.set()
 
         camera_process.join(timeout=3)
         if camera_process.is_alive():
@@ -142,6 +395,7 @@ def main():
         camera_buffer.close()
         detector_buffer.close()
         print("모든 자원이 정상 해제되었습니다.")
+
     # prev_ts = 0.0
     # try:
     #     while True:

@@ -1,8 +1,5 @@
 import time
-import numpy as np
-import multiprocessing as mp
 from pathlib import Path
-from typing import Optional, Tuple, Dict
 
 from pyorbbecsdk import (
     Pipeline,
@@ -14,9 +11,6 @@ from pyorbbecsdk import (
     OBPropertyID,
     OBStreamType,
 )
-
-# from lib.camera.camera_shm import CameraBuffer
-from camera_shm import CameraBuffer
 
 check_params = [
     ("color_auto_exposure", OBPropertyID.OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, "bool"),
@@ -104,20 +98,17 @@ class Gemini336:
     def _on_device_changed(self, removed_list, added_list):
         if removed_list.get_count() > 0:
             print("Deleted the camera")
-            # for i in range(removed_list.get_count()):
+
             serial_number = removed_list.get_device_serial_number_by_index(0)
-            # cam = self.cameras.pop(serial_number, None)
-            if self.camera:
-                self.camera.stop()
-                del self.camera
-                self.camera = None
+            if self.pipeline:
+                self.pipeline.stop()
+                del self.pipeline
+                self.pipeline = None
+
             print(f"  - {removed_list.get_device_name_by_index(0)} (SN: {serial_number})")
-            if self.buffer is not None:
-                self.buffer.set_status(False)
 
         if added_list.get_count() > 0:
             print("Added the camera:")
-            # for i in range(added_list.get_count()):
             device = added_list.get_device_by_index(0)
             info = device.get_device_info()
             serial_number = info.get_serial_number()
@@ -125,16 +116,9 @@ class Gemini336:
 
             print(f"{device_name} (SN: {serial_number})")
             try:
-                camera = OrbbecCamera(
-                    device=device,
-                    color_shape=(1280, 720, 3),
-                    depth_shape=(1280, 720, 1),
-                    settings_path=self.settings_path,
-                )
-                camera.start()
-                self.camera = camera
-                if self.buffer is not None:
-                    self.buffer.set_status(True)
+                pipeline = self.start_camera(device)
+                self.pipeline = pipeline
+                self.device = device
 
                 print(f"[Success connection] {serial_number} ")
             except Exception as e:
@@ -150,11 +134,9 @@ class Gemini336:
             try:
                 pipeline = self.start_camera(device)
 
-                print_intrinsics(pipeline)
-                check_parameters(device)
-
                 self.pipeline = pipeline
                 self.device = device
+
                 print(f"[Success connection] {serial_number} ")
             except Exception as e:
                 print(f"[Error the camera] {serial_number}: {e}")
@@ -195,35 +177,8 @@ class Gemini336:
         else:
             return None
 
-
-class OrbbecCamera:
-    def __init__(self, device, color_shape, depth_shape, settings_path):
-
-        self.device = device
-        self.info = device.get_device_info()
-        self.serial_number = self.info.get_serial_number()
-        self.pipeline: Optional[Pipeline] = None
-
-    def stop(self):
-        if self.pipeline:
-            try:
-                self.pipeline.stop()
-            except Exception:
-                pass
-            self.pipeline = None
-
-
-class CameraManager:
-    def __init__(self, shm_name=None):
-        current_dir = Path(__file__).resolve().parent
-        self.settings_path = str((current_dir / "gemini336_settings.json").resolve())
-        self.camera = None
-        self.align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
-
-        if shm_name is None:
-            self.buffer = None
-        else:
-            self.buffer = CameraBuffer(shm_name=shm_name, is_owner=False)
+    def get_state(self):
+        return self.state
 
 
 #     def runner(self, stop_signal: mp.Event):

@@ -38,9 +38,7 @@ class CameraBuffer:
         self.timestamp_bytes = int(np.uint64().itemsize)
         self.color_bytes = int(np.prod(color_shape) * np.uint8().itemsize)
         self.depth_bytes = int(np.prod(depth_shape) * np.uint16().itemsize)
-        self.frame_bytes = (
-            self.timestamp_bytes + self.color_bytes + self.depth_bytes
-        )
+        self.frame_bytes = self.timestamp_bytes + self.color_bytes + self.depth_bytes
         self.total_bytes = self.header_bytes + (self.frame_bytes * 2)
 
         if self.is_owner:
@@ -50,13 +48,9 @@ class CameraBuffer:
                 old_shm.unlink()
             except FileNotFoundError:
                 pass
-            self.shm = shared_memory.SharedMemory(
-                name=self.shm_name, create=True, size=self.total_bytes
-            )
+            self.shm = shared_memory.SharedMemory(name=self.shm_name, create=True, size=self.total_bytes)
         else:
-            self.shm = shared_memory.SharedMemory(
-                name=self.shm_name, create=False
-            )
+            self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
 
         self.header = BufferHeader.from_buffer(self.shm.buf)
 
@@ -85,9 +79,7 @@ class CameraBuffer:
                 buffer=self.shm.buf,
                 offset=depth_offset,
             )
-            self.slots.append(
-                {"ts": ts_arr, "color": color_arr, "depth": depth_arr}
-            )
+            self.slots.append({"ts": ts_arr, "color": color_arr, "depth": depth_arr})
 
     def write(
         self,
@@ -101,15 +93,11 @@ class CameraBuffer:
         target_slot["ts"][0] = timestamp
 
         if color_data is not None:
-            np.copyto(
-                target_slot["color"], color_data.reshape(self.color_shape)
-            )
+            np.copyto(target_slot["color"], color_data.reshape(self.color_shape))
 
         if depth_data is not None:
             depth_data_u16 = depth_data.view(np.uint16)
-            np.copyto(
-                target_slot["depth"], depth_data_u16.reshape(self.depth_shape)
-            )
+            np.copyto(target_slot["depth"], depth_data_u16.reshape(self.depth_shape))
 
         self.header.index = next_idx
 
@@ -137,9 +125,7 @@ class CameraBuffer:
 
     def close(self):
         del self.header
-        for slot in self.slots:
-            self.slots.clear()
-            del slot
+        self.slots.clear()
 
         import gc
 
