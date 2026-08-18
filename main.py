@@ -3,6 +3,7 @@ import time
 import numpy as np
 import multiprocessing as mp
 from utils import draw_3d_axis
+import threading
 
 from lib.camera.gemini336 import Gemini336
 from lib.camera.buffer import CameraBuffer
@@ -11,6 +12,8 @@ from lib.detector.detection import Detector, compute_pose
 from lib.detector.detection import DetectorBuffer
 
 from lib.tracker.tracker import CentroidTracker3D
+from lib.control.ik_py import PyIk
+from lib.control.dsr_py import DoosanRobotController
 
 
 def camera_runner(
@@ -165,12 +168,72 @@ def detector_runner(
         detector_buffer.close()
 
 
-def tracking_runner(detector_shm_name, stop_signal):
+def control_runner(detector_shm_name, stop_signal):
     detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=False)
 
+    URDF = "/home/uon/Downloads/ik_solver-dev/data/robot/urdf/doosan_m1013.urdf"
+    solver = PyIk(URDF)
+    is_init_ik = False
+    robot = DoosanRobotController("192.168.1.30", 500)
+
+    INIT_JOINT = [-130.50, -6.62, -88.98, 0.08, -84.39, 66.5, 0]  # [deg]
+    TARGET_POSE = [0.43742, 0.45275, 0.5, 38.92, -180, -123.24]  # x, y, z, roll, pitch, yaw [m, deg]
+
+    def ik_callback():
+        d = 0.0005
+
+        while True:
+            if not is_init_ik:
+                continue
+
+            if TARGET_POSE[2] < 0.3 or TARGET_POSE[2] > 0.7:
+                d *= -1
+            TARGET_POSE[2] = TARGET_POSE[2] + d
+
+            target_pose = TARGET_POSE  # TCP Pose
+
+            target_matrix = PyIk.make_tf(
+                target_pose[0],
+                target_pose[1],
+                target_pose[2],  # x, y, z [m]
+                target_pose[3],
+                target_pose[4],
+                target_pose[5],  # roll, pitch, yaw [rad]
+                use_deg=False,
+            )
+
+            solver.movel(target_matrix)  # This Must be in threding
+            time.sleep(0.001)
+
+    robot.connect()
+    time.sleep(0.1)
+    robot.servo_on()
+    time.sleep(3.0)
+    robot.start_rt()
+
+    if not solver.init():
+        print("Error: PyIk 초기화 실패")
+        return
+    time.sleep(1.0)
+    INIT_JOINT[:6] = robot.get_curr_joint_deg()
+    # robot.movej(INIT_JOINT, 3.0)  # 3 sec moving
+    solver.set_joint(INIT_JOINT, use_deg=True)
+    is_init_ik = True
+
+    th = threading.Thread(target=ik_callback)
+    th.start()
+
     while not stop_signal.is_set():
-        if detector_buffer.get_status():
-            continue
+        # if detector_buffer.get_status():
+        # pass
+
+        curr_tf = robot.get_flange_tf(time.time_ns())
+        print(curr_tf)
+
+        res = solver.get_current_joint(use_deg=True)
+
+        robot.movej_rt(res[0:6], 0.001)
+        time.sleep(0.001)
 
 
 def main():
@@ -186,9 +249,16 @@ def main():
     detector_shm_name = "detection_buffer"
     detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=True)
     detector_process = mp.Process(
-        target=detector_runner, args=(camera_shm_name, detector_shm_name, stop_signal, frame_ready_signal)
+        target=detector_runner,
+        args=(camera_shm_name, detector_shm_name, stop_signal, frame_ready_signal),
     )
     detector_process.start()
+
+    control_process = mp.Process(
+        target=control_runner,
+        args=(detector_shm_name, stop_signal),
+    )
+    control_process.start()
 
     try:
         print("🚀 [Main Controller] 카메라 및 비전 파이프라인 시각화 실행 중 ('q': 종료)")

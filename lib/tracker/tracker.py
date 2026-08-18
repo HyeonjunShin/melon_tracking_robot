@@ -109,8 +109,8 @@ class CentroidTracker3D:
         )
 
         # 시스템(운동) 노이즈 및 센서 관측 노이즈 튜닝
-        self.q_pos = 0.05  # 위치 시스템 노이즈
-        self.q_vel = 0.5  # 속도 시스템 노이즈
+        self.q_pos = 0.1  # 위치 시스템 노이즈
+        self.q_vel = 5.0  # 속도 시스템 노이즈
         self.r_pos = 0.005  # Depth 센서 오차 분산
 
         self.R = np.eye(3, dtype=np.float32) * self.r_pos

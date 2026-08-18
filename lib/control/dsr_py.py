@@ -1,10 +1,10 @@
 import time
-import doosan_robot_controller_py as drc
+from . import doosan_robot_controller_py as drc
 
 
 class DoosanRobotController(drc.DSR):
-    def __init__(self, ip: str):
-        super().__init__(ip)
+    def __init__(self, ip: str, queue_size):
+        super().__init__(ip, queue_size)
 
     def connect(self):
         super().connect()
@@ -36,17 +36,37 @@ class DoosanRobotController(drc.DSR):
     def movej(self, q, time):
         super().movej(q, time)  # deg
 
-    def start_rt(self, q):
-        return super().start_rt(q)
+    def start_rt(self):
+        return super().start_rt()
+
+    # def start_rt(self, q):
+    # return super().start_rt(q)
 
     def movej_rt(self, q, dt):
         super().movej_rt(q, dt)
 
+    def get_flange_tf(self, target_ts):
+        return super().get_flange_tf(target_ts)
+
+    def get_cmd_joint(self):
+        return super().get_cmd_joint()
+
 
 if __name__ == "__main__":
-    robot = DoosanRobotController("192.168.1.30")
+    import numpy as np
+
+    np.set_printoptions(suppress=True, precision=4)
+
+    robot = DoosanRobotController("192.168.1.30", 500)
     robot.connect()
     time.sleep(0.1)
     robot.servo_on()
     time.sleep(5)
+    robot.start_rt()
+
+    while True:
+        ts = time.time_ns()
+        # print(robot.get_flange_tf(ts))
+        print(robot.get_cmd_joint())
+
     robot.disconnect()

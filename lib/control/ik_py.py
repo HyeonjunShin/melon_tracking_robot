@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from typing import Union, List
-import ik_solver_py
+from . import ik_solver_py
 
 
 class PyIk:
@@ -28,9 +28,7 @@ class PyIk:
 
     def _ensure_initialized(self):
         if not self._is_initialized:
-            raise RuntimeError(
-                "IkSolver가 초기화되지 않았습니다. 먼저 init()을 호출하세요."
-            )
+            raise RuntimeError("IkSolver가 초기화되지 않았습니다. 먼저 init()을 호출하세요.")
 
     # --------------------------------------------------------------------------
     # 제어 함수 (Motion Controls)
@@ -46,9 +44,7 @@ class PyIk:
         q_np = np.asarray(q, dtype=np.float64)
 
         if q_np.shape != (7,):
-            raise ValueError(
-                f"조인트 배열의 크기는 7이어야 합니다. 입력 크기: {q_np.shape}"
-            )
+            raise ValueError(f"조인트 배열의 크기는 7이어야 합니다. 입력 크기: {q_np.shape}")
 
         if use_deg:
             q_np = np.radians(q_np)
@@ -63,9 +59,7 @@ class PyIk:
         """
         self._ensure_initialized()
         if target_matrix.shape != (4, 4):
-            raise ValueError(
-                f"목표 포즈 행렬은 4x4 크기여야 합니다. 입력 크기: {target_matrix.shape}"
-            )
+            raise ValueError(f"목표 포즈 행렬은 4x4 크기여야 합니다. 입력 크기: {target_matrix.shape}")
 
         self._solver.movel(target_matrix)
 
@@ -119,9 +113,7 @@ class PyIk:
     # --------------------------------------------------------------------------
     # 설정 함수 (Setters)
     # --------------------------------------------------------------------------
-    def set_joint(
-        self, joint: Union[np.ndarray, List[float]], use_deg: bool = False
-    ):
+    def set_joint(self, joint: Union[np.ndarray, List[float]], use_deg: bool = False):
         """로봇의 현재 조인트 상태를 강제로 설정(동기화)합니다."""
         self._ensure_initialized()
         joint_np = np.asarray(joint, dtype=np.float64)
@@ -129,18 +121,14 @@ class PyIk:
             joint_np = np.radians(joint_np)
         self._solver.set_joint(joint_np)
 
-    def set_joint_range_limit(
-        self, index: int, min_val: float, max_val: float, use_deg: bool = False
-    ):
+    def set_joint_range_limit(self, index: int, min_val: float, max_val: float, use_deg: bool = False):
         """특정 조인트의 최소/최대 가동 범위를 제한합니다."""
         if use_deg:
             min_val = math.radians(min_val)
             max_val = math.radians(max_val)
         self._solver.set_joint_range_limit(index, min_val, max_val)
 
-    def set_joint_velocity_limit(
-        self, index: int, max_vel: float, use_deg: bool = False
-    ):
+    def set_joint_velocity_limit(self, index: int, max_vel: float, use_deg: bool = False):
         """특정 조인트의 최대 회전 속도를 제한합니다."""
         if use_deg:
             max_vel = math.radians(max_vel)
@@ -150,9 +138,7 @@ class PyIk:
         """전체 조인트 속도 제한에 가중치(Scale)를 적용합니다."""
         self._solver.set_joint_velocity_limit_scale(scale)
 
-    def set_workspace_limits(
-        self, x_range: tuple, y_range: tuple, z_range: tuple
-    ):
+    def set_workspace_limits(self, x_range: tuple, y_range: tuple, z_range: tuple):
         """
         로봇 TCP가 움직일 수 있는 3차원 작업 영역(Workspace)을 제한합니다.
 
@@ -238,9 +224,7 @@ class SharedMemory:
         self.total_size = offset
 
         try:
-            self.shm = shared_memory.SharedMemory(
-                name=name, create=True, size=self.total_size
-            )
+            self.shm = shared_memory.SharedMemory(name=name, create=True, size=self.total_size)
         except FileExistsError:
             self.shm = shared_memory.SharedMemory(name=name)
 
