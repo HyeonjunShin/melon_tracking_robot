@@ -232,69 +232,77 @@ class Detector:
         )
 
 
-def compute_pose(depth, bbox, fx, fy, cx, cy, crop_ratio=0.6):
-    """
-    BBox 중앙 60% ROI 영역의 Depth 데이터를 3D Centroid(X, Y, Z)로 복원 후
-    카메라 정면 고정 회전 쿼터니언 [0, 0, 0, 1]을 부여하여 반환하는 함수 (프로토타입용)
+import numpy as np
+
+
+def compute_pose(depth, bbox, fx, fy, cx, cy, patch_size=30, min_depth=0.1, max_depth=3.0):
+    """BBox의 중심점을 기준으로 patch_size x patch_size 패치를 추출하고, Depth 평균을 구하여 3D Centroid를
+
+    계산합니다.
+
+    좌표계 정의:
+    - 오른쪽: +X
+    - 화면 하단: +Y
+    - 화면 깊이 방향 (아래쪽): +Z
+    - Rotation: 고정 단위 쿼터니언 [0, 0, 0, 1]
     """
     x1, y1, x2, y2 = bbox
     w = x2 - x1
     h = y2 - y1
 
     if w <= 0 or h <= 0:
-        return None
+        return None, None
 
-    # 1. 중앙 60% 영역 Crop
-    scale = np.sqrt(crop_ratio)
-    margin_w = (w * (1 - scale)) / 2
-    margin_h = (h * (1 - scale)) / 2
+    # 1. BBox의 2D 중심점 계산 (픽셀 좌표)
+    u_center = (x1 + x2) / 2.0
+    v_center = (y1 + y2) / 2.0
 
-    cx1 = int(max(0, x1 + margin_w))
-    cy1 = int(max(0, y1 + margin_h))
-    cx2 = int(min(depth.shape[1], x2 - margin_w))
-    cy2 = int(min(depth.shape[0], y2 - margin_h))
+    # 2. 중심점 기준 패치(Patch) 영역 좌표 산출 (예: 30x30 또는 50x50)
+    half_patch = patch_size / 2.0
+    px1 = int(max(0, np.floor(u_center - half_patch)))
+    py1 = int(max(0, np.floor(v_center - half_patch)))
+    px2 = int(min(depth.shape[1], np.ceil(u_center + half_patch)))
+    py2 = int(min(depth.shape[0], np.ceil(v_center + half_patch)))
 
-    if cx2 <= cx1 or cy2 <= cy1:
-        return None
+    if px2 <= px1 or py2 <= py1:
+        return None, None
 
-    # Depth ROI 추출 및 2D 차원 보장
-    depth_roi = np.squeeze(depth[cy1:cy2, cx1:cx2])
-    if depth_roi.ndim != 2:
-        return None
+    # 3. Depth 패치 ROI 추출
+    depth_patch = np.squeeze(depth[py1:py2, px1:px2])
+    if depth_patch.size == 0:
+        return None, None
 
-    # 2. 유효 Depth 마스킹 (0 및 비정상 센서 값 제외)
-    # 단위가 mm일 경우 (100mm ~ 3000mm) / m일 경우 (0.1m ~ 3.0m)
-    # 아래는 m 단위 기준 (센서 데이터가 mm라면 > 100 조건으로 수정)
-    valid_mask = depth_roi > 0
+    # 4. 유효 Depth 마스킹 (0 및 노이즈 제거)
+    valid_mask = depth_patch > 0
     if not np.any(valid_mask):
-        return None
+        return None, None
 
-    # 3. Depth 노이즈 튀는 현상 방지 (Median/Percentile 필터링)
-    valid_depths = depth_roi[valid_mask].astype(np.float64)
+    valid_depths = depth_patch[valid_mask].astype(np.float64)
 
-    # 단위 변환 (mm -> m 변환이 필요한 경우)
-    if np.median(valid_depths) > 10.0:  # mm 단위 데이터 감지 시
+    # 단위 자동 감지 (mm -> m 변환)
+    if np.median(valid_depths) > 10.0:
         valid_depths /= 1000.0
 
-    # 4. Pixel Coordinates Grid 생성
-    u_grid, v_grid = np.meshgrid(np.arange(cx1, cx2), np.arange(cy1, cy2))
-    u_valid = u_grid[valid_mask]
-    v_valid = v_grid[valid_mask]
+    # 노이즈 범위(예: 0.1m ~ 3.0m) 필터링
+    valid_depths = valid_depths[(valid_depths >= min_depth) & (valid_depths <= max_depth)]
+    if len(valid_depths) == 0:
+        return None, None
 
-    # 5. Pinhole Model로 3D 좌표 복원 (m 단위)
-    z_pts = valid_depths
-    x_pts = (u_valid - cx) * z_pts / fx
-    y_pts = (v_valid - cy) * z_pts / fy
+    # 5. 패치 영역의 Depth 평균(Mean) 계산
+    zc = np.mean(valid_depths)
 
-    # 6. 아웃라이어 제거 후 3D Centroid 계산 (np.median 활용)
-    xc = np.median(x_pts)
-    yc = np.median(y_pts)
-    zc = np.median(z_pts)
+    # 6. Pinhole Model로 3D Centroid 계산 (m 단위)
+    # X: 오른쪽 (+), Y: 하단 (+), Z: 화면 앞쪽/깊이 (+)
+    xc = (u_center - cx) * zc / fx
+    yc = (v_center - cy) * zc / fy
+
     centroid = np.array([xc, yc, zc], dtype=np.float64)
 
     # 7. 고정 쿼터니언 지정 (Roll=0, Pitch=0, Yaw=0 -> [qx=0, qy=0, qz=0, qw=1])
     rotation = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
-    return (centroid, rotation)
+
+    return centroid, rotation
+
     # print(False if len(final_scores) == 0 else True)
     # print(final_scores)
     # print(final_bboxes)
@@ -325,3 +333,51 @@ def compute_pose(depth, bbox, fx, fy, cx, cy, crop_ratio=0.6):
     # vel_text = f"V [Vx:{vx:.2f}, Vy:{vy:.2f}, Vz:{vz:.2f}] mm/s"
     # print(pos_text)
     # print(vel_text)
+
+
+import cv2
+
+
+def compute_pose_with_undistort(depth, bbox, K, DIST_COEFFS, patch_size=30):
+    """카메라 Distortion(왜곡 계수)을 보정하여 3D Centroid(m)를 계산합니다."""
+    xmin, ymin, xmax, ymax = bbox
+
+    u = (xmin + xmax) / 2.0
+    v = (ymin + ymax) / 2.0
+
+    h, w = depth.shape[:2]
+    if not (0 <= u < w and 0 <= v < h):
+        return None, None
+
+    u_idx, v_idx = int(round(u)), int(round(v))
+    half_patch = patch_size // 2
+
+    v_min, v_max = max(0, v_idx - half_patch), min(h, v_idx + half_patch)
+    u_min, u_max = max(0, u_idx - half_patch), min(w, u_idx + half_patch)
+
+    depth_patch = depth[v_min:v_max, u_min:u_max]
+    valid_depths = depth_patch[depth_patch > 0]
+
+    if len(valid_depths) == 0:
+        return None, None
+
+    z_m = float(np.median(valid_depths))
+    z_m /= 1000.0
+
+    pixel_pt = np.array([[[u, v]]], dtype=np.float32)
+
+    undistorted_pt = cv2.undistortPoints(pixel_pt, K, DIST_COEFFS, P=K)
+    u_undist, v_undist = undistorted_pt[0][0]
+
+    fx = K[0, 0]
+    fy = K[1, 1]
+    cx = K[0, 2]
+    cy = K[1, 2]
+
+    x_cam = (u_undist - cx) * z_m / fx
+    y_cam = (v_undist - cy) * z_m / fy
+    z_cam = z_m
+
+    centroid_cam = np.array([x_cam, y_cam, z_cam], dtype=np.float64)
+    rotation_cam = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    return centroid_cam, rotation_cam

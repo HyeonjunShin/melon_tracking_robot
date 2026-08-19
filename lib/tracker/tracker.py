@@ -83,22 +83,13 @@ def draw_3d_tf_axis(
 
 
 class CentroidTracker3D:
-    """
-    3D Centroid (X, Y, Z) 전용 칼만 필터 트래커
-
-    - State vector (6, 1): [x, y, z, vx, vy, vz]^T  (위치 및 속도)
-    - Measurement (3, 1):  [x, y, z]^T              (측정 위치)
-    """
-
     def __init__(self, dt=1 / 30.0):
         self.dt = dt
         self.is_initialized = False
         self.last_time = None
 
-        # 상태 벡터 [x, y, z, vx, vy, vz]^T
         self.x = np.zeros((6, 1), dtype=np.float32)
 
-        # 관측 행렬 (H): 위치 [x, y, z]만 관측
         self.H = np.array(
             [
                 [1, 0, 0, 0, 0, 0],
@@ -108,19 +99,21 @@ class CentroidTracker3D:
             dtype=np.float32,
         )
 
-        # 시스템(운동) 노이즈 및 센서 관측 노이즈 튜닝
-        self.q_pos = 0.1  # 위치 시스템 노이즈
-        self.q_vel = 5.0  # 속도 시스템 노이즈
-        self.r_pos = 0.005  # Depth 센서 오차 분산
+        # -------------------------------------------------------------
+        # 💡 [반응성 최적화 튜닝]
+        # -------------------------------------------------------------
+        # 1. r_pos: 0.08 -> 0.008로 낮추어 측정값 반영 속도를 획기적으로 올립니다.
+        self.r_pos = 0.001
+
+        # 2. q_acc: 0.05 -> 0.8로 올려 급격한 가속도 변화를 빠르게 추종합니다.
+        self.q_acc = 2.0
 
         self.R = np.eye(3, dtype=np.float32) * self.r_pos
-        self.P = np.eye(6, dtype=np.float32) * 100.0
+        self.P = np.eye(6, dtype=np.float32) * 1.0
 
         self._update_matrices(self.dt)
 
     def _update_matrices(self, dt):
-        """dt(시간 간격) 변경 시 상태 전이 행렬(F) 및 시스템 노이즈(Q) 업데이트"""
-        # 등속도 모델 (Constant Velocity Model)
         self.F = np.array(
             [
                 [1, 0, 0, dt, 0, 0],
@@ -133,12 +126,10 @@ class CentroidTracker3D:
             dtype=np.float32,
         )
 
-        self.Q = (
-            np.diag([self.q_pos, self.q_pos, self.q_pos, self.q_vel, self.q_vel, self.q_vel]).astype(
-                np.float32
-            )
-            * dt
-        )
+        q_p = 0.25 * (dt**4) * self.q_acc
+        q_v = (dt**2) * self.q_acc
+
+        self.Q = np.diag([q_p, q_p, q_p, q_v, q_v, q_v]).astype(np.float32)
 
     def update(self, z_centroid=None, current_time=None):
         if current_time is not None:
@@ -151,11 +142,14 @@ class CentroidTracker3D:
         if not self.is_initialized:
             if z_centroid is not None:
                 self.x[:3] = np.array(z_centroid, dtype=np.float32).reshape(3, 1)
-                self.x[3:] = 0.0  # 초기 속도는 0
+                self.x[3:] = 0.0
                 self.is_initialized = True
 
-            # [수정] (centroid_3d, velocity_3d, is_updated) 반환
-            return self.x[:3].flatten().astype(np.float64), self.x[3:].flatten().astype(np.float64), False
+            return (
+                self.x[:3].flatten().astype(np.float64),
+                self.x[3:].flatten().astype(np.float64),
+                False,
+            )
 
         # Predict Step
         self.x = self.F @ self.x
@@ -172,15 +166,41 @@ class CentroidTracker3D:
             I = np.eye(6, dtype=np.float32)
             self.P = (I - K @ self.H) @ self.P
 
-            return self.x[:3].flatten().astype(np.float64), self.x[3:].flatten().astype(np.float64), True
-        else:
-            return self.x[:3].flatten().astype(np.float64), self.x[3:].flatten().astype(np.float64), False
+            MAX_VEL = 2.5
+            self.x[3:] = np.clip(self.x[3:], -MAX_VEL, MAX_VEL)
 
-    def predict_future_centroid(self, lead_time_sec=0.05):
-        """
-        시스템 Latency 보상을 위해 N초 후의 미래 3D Centroid 위치 예측
-        """
-        current_pos = self.x[:3].flatten()
-        current_vel = self.x[3:].flatten()
-        future_pos = current_pos + current_vel * lead_time_sec
-        return future_pos.astype(np.float64)
+            # =========================================================
+            # 💡 [수정 구역] 정지 상태 감지 (Zero-Lock) & 조건부 Lead Time
+            # =========================================================
+            # 1. 측정된 위치 변화량(Distance) 계산
+            dist = np.linalg.norm(z_measured - self.x[:3])
+
+            # 2. 이동량이 5mm 미만이면 정지 상태로 판단하여 속도를 0으로 고정
+            STOP_THRESHOLD = 0.005  # 5mm
+            if dist < STOP_THRESHOLD:
+                self.x[3:] = 0.0  # 속도 누적 차단 (Drift 방지)
+
+            # 3. 속도가 3cm/s 이상일 때만 lead_time 적용 (정지 시 lead_time=0)
+            current_vel_norm = np.linalg.norm(self.x[3:])
+            if current_vel_norm > 0.03:
+                effective_lead_time = 0.05
+            else:
+                effective_lead_time = 0.0
+
+            # 4. 최종 반환 위치 계산
+            pred_pos = self.x[:3].flatten() + self.x[3:].flatten() * effective_lead_time
+            # =========================================================
+
+            return (
+                pred_pos.astype(np.float64),
+                self.x[3:].flatten().astype(np.float64),
+                True,
+            )
+        else:
+            self.x[3:] *= 0.90
+
+            return (
+                self.x[:3].flatten().astype(np.float64),
+                self.x[3:].flatten().astype(np.float64),
+                False,
+            )
