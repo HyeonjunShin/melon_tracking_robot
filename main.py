@@ -38,7 +38,7 @@ def camera_runner(
     camera = Gemini336(color_shape=color_shape, depth_shape=depth_shape, settings_path=settings_path)
 
     while not stop_signal.is_set():
-        loop_start = time.perf_counter()
+        # loop_start = time.perf_counter()
 
         frame = camera.get_frame()
         if frame is None:
@@ -59,9 +59,9 @@ def camera_runner(
         buffer.write(timestamp, color_data, depth_data)
         frame_ready_signal.set()
 
-        loop_end = time.perf_counter()
-        proc_time_ms = (process_end - loop_start) * 1000
-        total_time_ms = (loop_end - loop_start) * 1000
+        # loop_end = time.perf_counter()
+        # proc_time_ms = (process_end - loop_start) * 1000
+        # total_time_ms = (loop_end - loop_start) * 1000
 
         # print(
         #     f"[카메라 처리]: {proc_time_ms:.2f} ms | [전체 루프]: {total_time_ms:.2f} ms (FPS: {1000/total_time_ms:.1f})"
@@ -80,23 +80,11 @@ T_FLANGE_CAMERA = np.array(
 
 
 def transform_cam_to_flange(centroid_cam, rotation_cam):
-    """Camera 좌표계의 Pose를 Flange 좌표계 Pose로 변환합니다."""
-    # 💡 [핵심] rotation_cam이 None으로 들어올 경우 기본 단위 쿼터니언 적용!
-    if rotation_cam is None:
-        rotation_cam = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
-
     T_cam_obj = np.eye(4, dtype=np.float64)
 
-    if hasattr(rotation_cam, "shape") and rotation_cam.shape == (4,):
-        T_cam_obj[:3, :3] = R.from_quat(rotation_cam).as_matrix()
-    elif hasattr(rotation_cam, "shape") and rotation_cam.shape == (3, 3):
-        T_cam_obj[:3, :3] = rotation_cam
-    else:
-        T_cam_obj[:3, :3] = R.from_quat([0.0, 0.0, 0.0, 1.0]).as_matrix()
-
+    T_cam_obj[:3, :3] = R.from_quat(rotation_cam).as_matrix()
     T_cam_obj[:3, 3] = centroid_cam
 
-    # T_flange_obj = T_flange_camera @ T_cam_obj
     T_flange_obj = T_FLANGE_CAMERA @ T_cam_obj
 
     centroid_flange = T_flange_obj[:3, 3]
@@ -119,7 +107,14 @@ def detector_runner(
     FX, FY = 693.3102, 693.4061
     CX, CY = 639.6599, 365.0724
 
-    K = np.array([[FX, 0.0, CX], [0.0, FY, CY], [0.0, 0.0, 1.0]], dtype=np.float64)
+    K = np.array(
+        [
+            [FX, 0.0, CX],
+            [0.0, FY, CY],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
 
     DIST_COEFFS = np.array(
         [
@@ -135,16 +130,13 @@ def detector_runner(
         dtype=np.float64,
     )
 
-    tracker = CentroidTracker3D()
-    prev_ts = 0
-
     try:
         while not stop_signal.is_set():
             if not frame_ready_signal.wait(timeout=0.05):
                 continue
             frame_ready_signal.clear()
 
-            loop_start = time.perf_counter()
+            # loop_start = time.perf_counter()
 
             if not camera_buffer.get_status():
                 detector_buffer.set_status(False)
@@ -154,20 +146,22 @@ def detector_runner(
 
             current_frame = camera_buffer.read_latest_frame()
 
-            if prev_ts == current_frame.timestamp:
-                continue
+            # if prev_ts == current_frame.timestamp:
+            # continue
+            # prev_ts = current_frame.timestamp
+            # frame_time_sec = prev_ts / 1_000_000.0
 
-            prev_ts = current_frame.timestamp
-            frame_time_sec = prev_ts / 1_000_000.0
-
+            timestamp = current_frame.timestamp
             color = current_frame.color.copy()
             depth = current_frame.depth.copy()
 
-            # --- STEP 1: 물체 디텍션 ---
-            scores, bboxes = detector.detect(color)
+            scores, bboxes = detector.detect(color)  # detecte the objects.
 
-            centroid_cam = None
-            rotation_cam = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+            detected = False
+            best_score = 0.0
+            best_bbox = np.zeros((4,), dtype=np.float64)
+            best_centroid = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+            best_rotation = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
 
             if len(scores) > 0:
                 best_idx = np.argmax(scores)
@@ -177,40 +171,24 @@ def detector_runner(
                 best_bbox[[0, 2]] = best_bbox[[0, 2]] * 2
                 best_bbox[[1, 3]] = (best_bbox[[1, 3]] - 12) * 2
 
-                # 💡 Distortion 왜곡 보정을 거친 3D Pose 연산 함수 호출
-                c_cam, r_cam = compute_pose_with_undistort(depth, best_bbox, K, DIST_COEFFS, patch_size=30)
+                centroid_camera, rotation_camera = compute_pose_with_undistort(
+                    depth, best_bbox, K, DIST_COEFFS, patch_size=30
+                )
+                if centroid_camera is not None:
+                    best_centroid, best_rotation = transform_cam_to_flange(centroid_camera, rotation_camera)
+                    detected = True
 
-                if c_cam is not None:
-                    centroid_cam = c_cam
-                if r_cam is not None:
-                    rotation_cam = r_cam
-            else:
-                best_score = 0.0
-                best_bbox = np.zeros((4,), dtype=np.float64)
-
-            # --- STEP 2: Kalman Filter (Camera Frame 기준 추적) ---
-            pred_centroid_cam, pred_velocity_cam, _ = tracker.update(
-                z_centroid=centroid_cam, current_time=frame_time_sec
-            )
-
-            # --- STEP 3: Camera Frame -> Flange Frame 변환 ---
-            pred_centroid_flange, rotation_flange = transform_cam_to_flange(pred_centroid_cam, rotation_cam)
-
-            # --- STEP 4: Shared Memory Write ---
             detector_buffer.write(
-                timestamp=prev_ts,
-                detected=(centroid_cam is not None),
+                timestamp=timestamp,
+                detected=detected,
                 score=best_score,
                 bbox=best_bbox.astype(np.float64),
-                centroid=pred_centroid_flange,
-                velocity=pred_velocity_cam,
-                rotation=rotation_flange,
+                centroid=best_centroid,
+                rotation=best_rotation,
             )
-
-            loop_end = time.perf_counter()
-            proc_time_ms = (loop_end - loop_start) * 1000
+            # loop_end = time.perf_counter()
+            # proc_time_ms = (loop_end - loop_start) * 1000
             # print(proc_time_ms)
-
     finally:
         detector_buffer.set_status(False)
         detector_buffer.close()
@@ -225,7 +203,7 @@ def control_runner(detector_shm_name, stop_signal):
     robot = DoosanRobotController("192.168.1.30", 500)
 
     INIT_JOINT = np.zeros((7,))
-    TARGET_POSE = [0.0, 0.7, 0.5, 95.73, -157.36, -176.68]
+    TARGET_POSE = [0.49797, 0.38864, 0.63364, 10.60, -157.91, -167.7]
 
     def ik_callback():
         d = 0.0005  # 1mm씩 움직임
@@ -267,6 +245,7 @@ def control_runner(detector_shm_name, stop_signal):
     # robot.movej(INIT_JOINT, 3.0)  # 3 sec moving
     solver.set_joint(INIT_JOINT, use_deg=True)
     solver.set_tcp_max_speed(0.1)
+    solver.set_end_effector_offset(T_FLANGE_CAMERA)
     is_init_ik = True
 
     th = threading.Thread(target=ik_callback)
@@ -275,74 +254,43 @@ def control_runner(detector_shm_name, stop_signal):
     while not stop_signal.is_set():
         if not detector_buffer.get_status():
             continue
+
         obj = detector_buffer.read_latest()
-        # print(obj.timestamp)
-        # print(obj.centroid)
-        # print(obj.rotation)
-        # if detector_buffer.get_status():
-        # pass
+        if obj.detected:
+            robot_ts, robot_tf = robot.get_flange_tf(obj.timestamp)
 
-        # robot_ts, robot_tf = robot.get_flange_tf(obj.timestamp)
-        # robot_coord =
-        # print(robot_tf)
+            curr_tf_meter = robot_tf.copy()
+            curr_tf_meter[:3, 3] = curr_tf_meter[:3, 3] / 1000.0  # mm -> m
 
-        # print(obj.bbox, obj.centroid)
-        # print(obj.rotation)
+            R_base_flange = curr_tf_meter[:3, :3]  # Flange의 현재 회전 (3x3)
+            P_base_flange = curr_tf_meter[:3, 3]  # Flange의 현재 위치 (m)
 
-        robot_ts, robot_tf = robot.get_flange_tf(obj.timestamp)
-
-        curr_tf = np.array(robot_tf, dtype=np.float64)
-        if curr_tf.shape != (4, 4):
-            continue
-
-        # 💡 [핵심] robot_tf의 mm 위치 성분을 m 단위로 스케일 변환
-        curr_tf_meter = curr_tf.copy()
-        curr_tf_meter[:3, 3] = curr_tf[:3, 3] / 1000.0  # mm -> m 변환!
-
-        # R_base_flange = curr_tf_meter[:3, :3]  # Flange의 현재 회전 (3x3)
-        # P_base_flange = curr_tf_meter[:3, 3]  # Flange의 현재 위치 (m)
-
-        # # 2. detector_runner에서 넘어온 Flange 기준 물체 위치 (m 단위)
-        # P_flange_obj = np.array(obj.centroid, dtype=np.float64)
-
-        # # 3. Flange 기준 카메라 렌즈 오프셋 [X, Y, Z] (m 단위)
-        # t_flange_cam = T_FLANGE_CAMERA[:3, 3]
-
-        # # 4. 💡 [핵심] 카메라 렌즈를 물체 위에 맞추기 위한 Flange의 목표 위치 연산
-        # # Base 좌표계 상에서 (물체 상대 위치 - 카메라 오프셋)을 회전 변환하여 합산
-        # target_flange_pos = P_base_flange + R_base_flange @ (P_flange_obj - t_flange_cam)
-
-        # # 5. 최종 Target Pose 주입 (카메라 렌즈 기준 정렬)
-        # TARGET_POSE[0] = target_flange_pos[0]  # 카메라 렌즈 기준 X 정렬
-        # TARGET_POSE[1] = target_flange_pos[1]  # 카메라 렌즈 기준 Y 정렬
-        # TARGET_POSE[2] = 0.5  # 0.5m 안전 고정 높이
-
-        # -------------------------------------------------------------
-        # 2. Flange 기준 개체 Pose 행렬 생성 (m 단위)
-        # -------------------------------------------------------------
-        T_flange_obj = np.eye(4, dtype=np.float64)
-
-        if obj.rotation is not None and len(obj.rotation) == 4:
+            T_flange_obj = np.eye(4, dtype=np.float64)
             T_flange_obj[:3, :3] = R.from_quat(obj.rotation).as_matrix()
+            T_flange_obj[:3, 3] = obj.centroid
 
-        T_flange_obj[:3, 3] = obj.centroid  # 이미 m 단위 (-0.058, 0.251, 0.492)
+            # -------------------------------------------------------------
+            # 3. Base 기준 개체 Pose 계산 (m 단위 통일 후 행렬 곱)
+            # -------------------------------------------------------------
+            T_base_obj = curr_tf_meter @ T_flange_obj
 
-        # -------------------------------------------------------------
-        # 3. Base 기준 개체 Pose 계산 (m 단위 통일 후 행렬 곱)
-        # -------------------------------------------------------------
-        T_base_obj = curr_tf_meter @ T_flange_obj
+            # Base 기준 개체의 실제 3D 위치 [x, y, z] (m 단위)
+            robot_coord = T_base_obj[:3, 3]
 
-        # Base 기준 개체의 실제 3D 위치 [x, y, z] (m 단위)
-        robot_coord = T_base_obj[:3, 3]
+            target_quat = R.from_matrix(T_base_obj[:3, :3]).as_quat()
+            rpy_deg = R.from_quat(target_quat).as_euler("zyz", degrees=True)
 
-        # -------------------------------------------------------------
-        # 4. Target Pose 업데이트
-        # -------------------------------------------------------------
-        TARGET_POSE[0] = robot_coord[0]  # m 단위 Base X
-        TARGET_POSE[1] = robot_coord[1]  # m 단위 Base Y
-        TARGET_POSE[2] = 0.8
+            # -------------------------------------------------------------
+            # 4. Target Pose 업데이트
+            # -------------------------------------------------------------
+            TARGET_POSE[0] = robot_coord[0]  # m 단위 Base X
+            TARGET_POSE[1] = robot_coord[1]  # m 단위 Base Y
+            TARGET_POSE[2] = 0.6
+            TARGET_POSE[3] = rpy_deg[0]  # Z1 (deg)
+            TARGET_POSE[4] = rpy_deg[1]  # Y  (deg)
+            TARGET_POSE[5] = rpy_deg[2]  # Z2 (deg)
 
-        # print(robot_coord)
+            # print(robot_coord)
 
         res = solver.get_current_joint(use_deg=True)
 
@@ -363,15 +311,11 @@ def main():
     detector_shm_name = "detection_buffer"
     detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=True)
     detector_process = mp.Process(
-        target=detector_runner,
-        args=(camera_shm_name, detector_shm_name, stop_signal, frame_ready_signal),
+        target=detector_runner, args=(camera_shm_name, detector_shm_name, stop_signal, frame_ready_signal)
     )
     detector_process.start()
 
-    control_process = mp.Process(
-        target=control_runner,
-        args=(detector_shm_name, stop_signal),
-    )
+    control_process = mp.Process(target=control_runner, args=(detector_shm_name, stop_signal))
     control_process.start()
 
     try:
@@ -397,12 +341,12 @@ def main():
                 detector_ret = detector_buffer.read_latest()
 
                 centroid = detector_ret.centroid  # [X, Y, Z] (m)
-                velocity = detector_ret.velocity  # [Vx, Vy, Vz] (m/s)
+                # velocity = detector_ret.velocity  # [Vx, Vy, Vz] (m/s)
                 rotation = detector_ret.rotation
 
                 x, y, z = centroid
-                vx, vy, vz = velocity
-                speed = np.linalg.norm(velocity)  # 속도 크기 스칼라 (m/s)
+                # vx, vy, vz = velocity
+                # speed = np.linalg.norm(velocity)  # 속도 크기 스칼라 (m/s)
 
                 # ----------------------------------------------------------------------
                 # 1. 디텍터가 실제로 객체를 감지한 경우 (Active Detection)
@@ -449,7 +393,7 @@ def main():
 
                     # D. 화면 좌상단 3D 위치 및 속도 종합 오버레이 패널
                     pos_text = f"[3D POS]  X: {x:+.2f}m | Y: {y:+.2f}m | Z: {z:+.2f}m"
-                    vel_text = f"[3D VEL]  Vx: {vx:+.2f}m/s | Vy: {vy:+.2f}m/s | Vz: {vz:+.2f}m/s (Speed: {speed:.2f}m/s)"
+                    # vel_text = f"[3D VEL]  Vx: {vx:+.2f}m/s | Vy: {vy:+.2f}m/s | Vz: {vz:+.2f}m/s (Speed: {speed:.2f}m/s)"
 
                     # 배경 검은색 반투명 박스 (가독성 향상)
                     cv2.rectangle(color_img, (10, 10), (620, 75), (0, 0, 0), -1)
@@ -465,16 +409,16 @@ def main():
                         1,
                         cv2.LINE_AA,
                     )
-                    cv2.putText(
-                        color_img,
-                        vel_text,
-                        (20, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (0, 255, 255),
-                        1,
-                        cv2.LINE_AA,
-                    )
+                    # cv2.putText(
+                    #     color_img,
+                    #     vel_text,
+                    #     (20, 60),
+                    #     cv2.FONT_HERSHEY_SIMPLEX,
+                    #     0.55,
+                    #     (0, 255, 255),
+                    #     1,
+                    #     cv2.LINE_AA,
+                    # )
 
                     # E. 3D Orientation Axis 투영
                     draw_3d_axis(

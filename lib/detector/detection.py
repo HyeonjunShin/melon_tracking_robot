@@ -23,7 +23,6 @@ class TrackObj:
     score: float
     bbox: np.ndarray
     centroid: np.ndarray  # [X, Y, Z] (3D)
-    velocity: np.ndarray  # [Vx, Vy, Vz] (m/s)
     rotation: np.ndarray  # [qx, qy, qz, qw] (4D Quaternion)
 
 
@@ -48,7 +47,6 @@ class DetectorBuffer:
         self.bbox_bytes = np.dtype(np.float64).itemsize * 4  # 32
 
         self.centroid_bytes = np.dtype(np.float64).itemsize * 3  # 24
-        self.velocity_bytes = np.dtype(np.float64).itemsize * 3  # 24
         self.rotation_bytes = np.dtype(np.float64).itemsize * 4  # 32
 
         self.slot_bytes = (
@@ -58,7 +56,6 @@ class DetectorBuffer:
             + self.score_bytes
             + self.bbox_bytes
             + self.centroid_bytes
-            + self.velocity_bytes
             + self.rotation_bytes
         )  # Total: 136 bytes
 
@@ -103,9 +100,6 @@ class DetectorBuffer:
             centroid_arr = np.ndarray((3,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
 
             offset_curr += self.centroid_bytes
-            velocity_arr = np.ndarray((3,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
-
-            offset_curr += self.velocity_bytes
             rotation_arr = np.ndarray((4,), dtype=np.float64, buffer=self.shm.buf, offset=offset_curr)
 
             self.slots.append(
@@ -114,7 +108,6 @@ class DetectorBuffer:
                     "detected": detected_arr,
                     "score": score_arr,
                     "bbox": bbox_arr,
-                    "velocity": velocity_arr,
                     "centroid": centroid_arr,
                     "rotation": rotation_arr,
                 }
@@ -127,15 +120,12 @@ class DetectorBuffer:
         score: float = 0.0,
         bbox: np.ndarray = None,
         centroid: np.ndarray = None,
-        velocity: np.ndarray = None,
         rotation: np.ndarray = None,
     ):
         if bbox is None:
             bbox = np.zeros((4,), dtype=np.float64)
         if centroid is None:
             centroid = np.zeros((3,), dtype=np.float64)
-        if velocity is None:
-            velocity = np.zeros((3,), dtype=np.float64)
         if rotation is None:
             rotation = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
 
@@ -149,7 +139,6 @@ class DetectorBuffer:
 
         np.copyto(target_slot["bbox"], bbox.reshape(-1))
         np.copyto(target_slot["centroid"], centroid.reshape(-1))
-        np.copyto(target_slot["velocity"], velocity.reshape(-1))
         np.copyto(target_slot["rotation"], rotation.reshape(-1))
 
         self.write_index_arr[0] = next_idx
@@ -164,7 +153,6 @@ class DetectorBuffer:
             score=float(slot["score"][0]),
             bbox=slot["bbox"].copy(),
             centroid=slot["centroid"].copy(),
-            velocity=slot["velocity"].copy(),
             rotation=slot["rotation"].copy(),
         )
 
@@ -339,7 +327,6 @@ import cv2
 
 
 def compute_pose_with_undistort(depth, bbox, K, DIST_COEFFS, patch_size=30):
-    """카메라 Distortion(왜곡 계수)을 보정하여 3D Centroid(m)를 계산합니다."""
     xmin, ymin, xmax, ymax = bbox
 
     u = (xmin + xmax) / 2.0
@@ -362,7 +349,7 @@ def compute_pose_with_undistort(depth, bbox, K, DIST_COEFFS, patch_size=30):
         return None, None
 
     z_m = float(np.median(valid_depths))
-    z_m /= 1000.0
+    z_m /= 1000.0  # Convert unit mm to m
 
     pixel_pt = np.array([[[u, v]]], dtype=np.float32)
 
