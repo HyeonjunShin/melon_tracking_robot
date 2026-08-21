@@ -65,7 +65,7 @@ def print_intrinsics(pipeline):
         print("=" * 50 + "\n")
 
     except Exception as e:
-        print(f" 🛑 내적 파라미터(Intrinsic) 조회 실패: {e}")
+        print(f"내적 파라미터(Intrinsic) 조회 실패: {e}")
 
 
 def check_parameters(device):
@@ -79,7 +79,7 @@ def check_parameters(device):
                 val = device.get_int_property(prop_id)
             print(f" ▶ {label:<30} : {val}")
         except Exception:
-            print(f" 🛑 {label:<30} : [조회 실패 / 지원하지 않는 프로퍼티]")
+            print(f"{label:<30} : [조회 실패 / 지원하지 않는 프로퍼티]")
 
 
 class Gemini336:
@@ -181,92 +181,6 @@ class Gemini336:
         return self.state
 
 
-#     def runner(self, stop_signal: mp.Event):
-#         print("🎥 [Camera Runner] Lockless 버퍼 기반 스레드/프로세스 시작")
-#         self.buffer = CameraBuffer(shm_name=shm_name, is_owner=False)
-
-#         frame_count = 0
-#         fps_start_time = time.time()
-#         accumulated_latency_ms = 0.0
-
-#         try:
-#             while not stop_signal.is_set():
-#                 if len(self.cameras) == 0:
-#                     time.sleep(0.01)
-#                     continue
-
-#                 for serial_number, cam in list(self.cameras.items()):
-#                     if not cam.pipeline:
-#                         continue
-#                     loop_start_ns = time.time_ns()
-
-#                     try:
-#                         frames = cam.pipeline.wait_for_frames(100)
-#                         if frames is None:
-#                             continue
-
-#                         frames = self.align_filter.process(frames)
-#                         if not frames:
-#                             continue
-
-#                         color_frame = frames.get_color_frame()
-#                         depth_frame = frames.get_depth_frame()
-#                         if not color_frame or not depth_frame:
-#                             continue
-
-#                         ts = depth_frame.get_global_timestamp_us()
-
-#                         self.buffer.write(
-#                             ts, color_frame.get_data(), depth_frame.get_data()
-#                         )
-#                         self.buffer.set_status(True)
-
-#                         loop_end_ns = time.time_ns()
-#                         current_latency_ms = (
-#                             loop_end_ns - loop_start_ns
-#                         ) / 1_000_000.0
-#                         accumulated_latency_ms += current_latency_ms
-#                         frame_count += 1
-
-#                     except Exception as e:
-#                         print(
-#                             f"⚠️ 프레임 수신 중 장치 이탈 감지 ({serial_number}): {e}"
-#                         )
-#                         broken_cam = self.cameras.pop(serial_number, None)
-#                         if broken_cam:
-#                             broken_cam.stop()
-#                             del broken_cam
-
-#                 now_sec = time.time()
-#                 if now_sec - fps_start_time >= 1.0 and frame_count > 0:
-#                     avg_latency = accumulated_latency_ms / frame_count
-#                     self.buffer.set_latency(avg_latency)
-
-#                     frame_count = 0
-#                     accumulated_latency_ms = 0.0
-#                     fps_start_time = now_sec
-
-#         except KeyboardInterrupt:
-#             pass
-
-#         finally:
-#             print("🧹 [Camera Runner] 자원 해제 시작...")
-#             for cam in list(self.cameras.values()):
-#                 cam.stop()
-#             self.cameras.clear()
-#             del ctx
-
-#             if self.buffer:
-#                 self.buffer.close()
-#             print("🎥 [Camera Runner] 카메라 프로세스 정상 종료")
-
-
-# def camera_runner(shm_name, stop_signal):
-
-
-# manager = CameraManager(shm_name)
-# manager.run(stop_signal)
-
 
 if __name__ == "__main__":
     current_dir = Path(__file__).resolve().parent
@@ -288,76 +202,3 @@ if __name__ == "__main__":
             depth.get_global_timestamp_us(),
             time.time_ns(),
         )
-
-    # import multiprocessing as mp  # mp 정의 누락 대응
-    # import cv2
-
-    # mp.set_start_method("spawn", force=True)
-    # stop_signal = mp.Event()
-
-    # shm_name = "orbbec_frame_buffer"
-    # camera_buffer = CameraBuffer(shm_name=shm_name, is_owner=True)
-
-    # camera_process = mp.Process(
-    # print(frame.get_global_timestamp_us())
-    #     target=camera_runner, args=(shm_name, stop_signal)
-    # )
-    # camera_process.start()
-
-    # prev_ts = None
-    # try:
-    #     print(
-    #         "🚀 [Main Controller] 카메라 프로세스 실행 중 (종료하려면 'q' 또는 Ctrl+C)"
-    #     )
-    #     while True:
-    #         if camera_buffer.get_status():
-    #             frame = camera_buffer.read_latest_frame()
-    #             if prev_ts == frame.timestamp:
-    #                 continue
-    #             prev_ts = frame.timestamp
-
-    #             # 1. Color 프레임 가져오기 (이미 BGR 포맷이라고 가정)
-    #             color_img = frame.color
-
-    #             # 2. Depth 프레임 전처리 (16비트 -> 8비트 시각화용 변환)
-    #             depth_img = frame.depth
-    #             # 0~5000mm(5m) 사이의 거리를 0~255 값으로 정규화 (카메라 스펙에 맞게 조절 가능)
-    #             depth_clipped = np.clip(depth_img, 0, 5000)
-    #             depth_normalized = cv2.normalize(
-    #                 depth_clipped,
-    #                 None,
-    #                 0,
-    #                 255,
-    #                 cv2.NORM_MINMAX,
-    #                 dtype=cv2.CV_8U,
-    #             )
-    #             # 깊이감을 보기 좋게 JET 컬러맵 적용 (가까운 곳은 빨간색/파란색 등)
-    #             depth_colored = cv2.applyColorMap(
-    #                 depth_normalized, cv2.COLORMAP_JET
-    #             )
-
-    #             # 3. OpenCV 윈도우 표시
-
-    #             color_img = cv2.cvtColor(color_img, cv2.COLOR_RGB2BGR)
-    #             cv2.imshow("Color Stream", color_img)
-    #             cv2.imshow("Depth Stream", depth_colored)
-    #             print(camera_buffer.get_latency())
-    #             # 키 입력 처리 ('q' 누르면 안전 종료)
-    #             if cv2.waitKey(1) & 0xFF == ord("q"):
-    #                 break
-
-    # except KeyboardInterrupt:
-    #     print("\n종료 신호 수신. 카메라 프로세스를 정리합니다...")
-
-    # finally:
-    #     # 예외가 발생하더라도 자원이 확실히 해제되도록 보장
-    #     print("자원 해제 및 프로세스 종료 중...")
-    #     stop_signal.set()
-    #     camera_process.join(timeout=3)
-    #     if camera_process.is_alive():
-    #         camera_process.terminate()
-
-    #     # OpenCV 윈도우 닫기
-    #     cv2.destroyAllWindows()
-    #     camera_buffer.close()
-    #     print("모든 자원이 정상 해제되었습니다.")
