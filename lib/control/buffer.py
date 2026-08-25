@@ -1,7 +1,6 @@
-import numpy as np
-from multiprocessing import shared_memory
 import ctypes
 from dataclasses import dataclass
+import numpy as np
 
 
 class BufferHeader(ctypes.Structure):
@@ -13,31 +12,24 @@ class BufferHeader(ctypes.Structure):
 
 
 @dataclass
-class Frame:
+class Control:
     timestamp: int
-    color: np.ndarray
-    depth: np.ndarray
+    state: int
+    target_pose: np.ndarray
 
 
-class CameraBuffer:
+class ControlBuffer:
     def __init__(
         self,
         shm_name: str,
         is_owner: bool = False,
-        color_shape: tuple = (720, 1280, 3),
-        depth_shape: tuple = (720, 1280, 1),
     ):
 
         self.shm_name = shm_name
         self.is_owner = is_owner
 
-        self.color_shape = color_shape
-        self.depth_shape = depth_shape
-
         self.header_bytes = ctypes.sizeof(BufferHeader)
         self.timestamp_bytes = int(np.uint64().itemsize)
-        self.color_bytes = int(np.prod(color_shape) * np.uint8().itemsize)
-        self.depth_bytes = int(np.prod(depth_shape) * np.uint16().itemsize)
         self.frame_bytes = self.timestamp_bytes + self.color_bytes + self.depth_bytes
         self.total_bytes = self.header_bytes + (self.frame_bytes * 2)
 

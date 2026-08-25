@@ -143,7 +143,7 @@ class DetectorBuffer:
 
         self.write_index_arr[0] = next_idx
 
-    def read_latest(self) -> TrackObj:
+    def get_latest_detection(self) -> TrackObj:
         current_idx = int(self.write_index_arr[0])
         slot = self.slots[current_idx]
 

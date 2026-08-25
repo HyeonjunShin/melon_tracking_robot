@@ -169,7 +169,7 @@ class PyIk:
         if tf_matrix.shape != (4, 4):
             raise ValueError("엔드 이펙터 행렬은 4x4 크기여야 합니다.")
         self._solver.set_end_effector_offset(tf_matrix)
-
+    
     def set_base_transform(self, tf_matrix: np.ndarray):
         """4x4 NumPy 행렬을 입력받아 베이스 좌표계를 변환합니다."""
         if tf_matrix.shape != (4, 4):

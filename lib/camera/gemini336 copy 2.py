@@ -103,12 +103,8 @@ class OrbbecCamera:
             print("\n" + "=" * 50)
             print(" [Color Camera Intrinsic Parameters]")
             print(f"  ▶ Resolution : {c_intrin.width} x {c_intrin.height}")
-            print(
-                f"  ▶ Focal Length (fx, fy) : ({c_intrin.fx:.4f}, {c_intrin.fy:.4f})"
-            )
-            print(
-                f"  ▶ Principal Point (cx, cy) : ({c_intrin.cx:.4f}, {c_intrin.cy:.4f})"
-            )
+            print(f"  ▶ Focal Length (fx, fy) : ({c_intrin.fx:.4f}, {c_intrin.fy:.4f})")
+            print(f"  ▶ Principal Point (cx, cy) : ({c_intrin.cx:.4f}, {c_intrin.cy:.4f})")
             c_dist = param.rgb_distortion
             print(
                 f"  ▶ Distortion Model : {c_dist.k1} {c_dist.k2} {c_dist.k3} {c_dist.k4} {c_dist.k5} {c_dist.k6} {c_dist.p1} {c_dist.p2}"
@@ -118,12 +114,8 @@ class OrbbecCamera:
             print("-" * 50)
             print(" [Depth Camera Intrinsic Parameters]")
             print(f"  ▶ Resolution : {d_intrin.width} x {d_intrin.height}")
-            print(
-                f"  ▶ Focal Length (fx, fy) : ({d_intrin.fx:.4f}, {d_intrin.fy:.4f})"
-            )
-            print(
-                f"  ▶ Principal Point (cx, cy) : ({d_intrin.cx:.4f}, {d_intrin.cy:.4f})"
-            )
+            print(f"  ▶ Focal Length (fx, fy) : ({d_intrin.fx:.4f}, {d_intrin.fy:.4f})")
+            print(f"  ▶ Principal Point (cx, cy) : ({d_intrin.cx:.4f}, {d_intrin.cy:.4f})")
             d_dist = param.depth_distortion
             print(
                 f"  ▶ Distortion Model : {d_dist.k1} {d_dist.k2} {d_dist.k3} {d_dist.k4} {d_dist.k5} {d_dist.k6} {d_dist.p1} {d_dist.p2}"
@@ -142,16 +134,12 @@ class OrbbecCamera:
 
         # [순서 핵심 2] Pipeline 생성 및 스트림 프로필 설정
         self.pipeline = Pipeline(self.device)
-        color_profiles = self.pipeline.get_stream_profile_list(
-            OBSensorType.COLOR_SENSOR
-        )
+        color_profiles = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
         color_profile = color_profiles.get_video_stream_profile(
             self.color_shape[0], self.color_shape[1], OBFormat.RGB, 30
         )
 
-        depth_profiles = self.pipeline.get_stream_profile_list(
-            OBSensorType.DEPTH_SENSOR
-        )
+        depth_profiles = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
         depth_profile = depth_profiles.get_video_stream_profile(
             self.depth_shape[0], self.depth_shape[1], OBFormat.Y16, 30
         )
@@ -179,30 +167,22 @@ class OrbbecCamera:
 class CameraManager:
     def __init__(self, buffer: CameraBuffer):
         current_dir = Path(__file__).resolve().parent
-        self.settings_path = str(
-            (current_dir / "gemini336_settings.json").resolve()
-        )
+        self.settings_path = str((current_dir / "gemini336_settings.json").resolve())
         self.shm_name = shm_name
         self.camera = None
         self.buffer = buffer
-        self.align_filter = AlignFilter(
-            align_to_stream=OBStreamType.COLOR_STREAM
-        )
+        self.align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
 
     def _on_device_changed(self, removed_list, added_list):
         if removed_list.get_count() > 0:
             print("Deleted the camera")
             for i in range(removed_list.get_count()):
-                serial_number = removed_list.get_device_serial_number_by_index(
-                    i
-                )
+                serial_number = removed_list.get_device_serial_number_by_index(i)
                 cam = self.cameras.pop(serial_number, None)
                 if cam:
                     cam.stop()
                     del cam
-                print(
-                    f"  - {removed_list.get_device_name_by_index(i)} (SN: {serial_number})"
-                )
+                print(f"  - {removed_list.get_device_name_by_index(i)} (SN: {serial_number})")
                 self.buffer.set_status(False)
 
         if added_list.get_count() > 0:
@@ -286,22 +266,16 @@ class CameraManager:
 
                         ts = depth_frame.get_global_timestamp_us()
 
-                        self.buffer.write(
-                            ts, color_frame.get_data(), depth_frame.get_data()
-                        )
+                        self.buffer.write(ts, color_frame.get_data(), depth_frame.get_data())
                         self.buffer.set_status(True)
 
                         loop_end_ns = time.time_ns()
-                        current_latency_ms = (
-                            loop_end_ns - loop_start_ns
-                        ) / 1_000_000.0
+                        current_latency_ms = (loop_end_ns - loop_start_ns) / 1_000_000.0
                         accumulated_latency_ms += current_latency_ms
                         frame_count += 1
 
                     except Exception as e:
-                        print(
-                            f"⚠️ 프레임 수신 중 장치 이탈 감지 ({serial_number}): {e}"
-                        )
+                        print(f"⚠️ 프레임 수신 중 장치 이탈 감지 ({serial_number}): {e}")
                         broken_cam = self.cameras.pop(serial_number, None)
                         if broken_cam:
                             broken_cam.stop()
@@ -346,19 +320,15 @@ if __name__ == "__main__":
     shm_name = "orbbec_frame_buffer"
     camera_buffer = CameraBuffer(shm_name=shm_name, is_owner=True)
 
-    camera_process = mp.Process(
-        target=camera_runner, args=(shm_name, stop_signal)
-    )
+    camera_process = mp.Process(target=camera_runner, args=(shm_name, stop_signal))
     camera_process.start()
 
     prev_ts = None
     try:
-        print(
-            "🚀 [Main Controller] 카메라 프로세스 실행 중 (종료하려면 'q' 또는 Ctrl+C)"
-        )
+        print("🚀 [Main Controller] 카메라 프로세스 실행 중 (종료하려면 'q' 또는 Ctrl+C)")
         while True:
             if camera_buffer.get_status():
-                frame = camera_buffer.read_latest_frame()
+                frame = camera_buffer.get_latest_frame()
                 if prev_ts == frame.timestamp:
                     continue
                 prev_ts = frame.timestamp
@@ -379,9 +349,7 @@ if __name__ == "__main__":
                     dtype=cv2.CV_8U,
                 )
                 # 깊이감을 보기 좋게 JET 컬러맵 적용 (가까운 곳은 빨간색/파란색 등)
-                depth_colored = cv2.applyColorMap(
-                    depth_normalized, cv2.COLORMAP_JET
-                )
+                depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
 
                 # 3. OpenCV 윈도우 표시
 
