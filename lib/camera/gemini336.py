@@ -181,10 +181,10 @@ class Gemini336:
         return self.state
 
 
-
 if __name__ == "__main__":
     current_dir = Path(__file__).resolve().parent
     settings_path = str((current_dir / "gemini336_settings.json").resolve())
+
 
     camera = Gemini336(color_shape=(1280, 720, 3), depth_shape=(1280, 720, 1), settings_path=settings_path)
 
@@ -197,8 +197,8 @@ if __name__ == "__main__":
         if color is None:
             continue
         print(
-            color,
-            color.get_system_timestamp_us(),
+            # color,
+            # color.get_system_timestamp_us(),
             depth.get_global_timestamp_us(),
-            time.time_ns(),
+            time.monotonic_ns(),
         )

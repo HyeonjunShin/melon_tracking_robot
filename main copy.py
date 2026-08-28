@@ -50,7 +50,6 @@ TOOL_SCUTION = np.array(
     dtype=np.float64,
 )
 
-
 FX, FY = 693.3102, 693.4061
 CX, CY = 639.6599, 365.0724
 K = np.array(
@@ -344,6 +343,30 @@ def detector_runner(
         detector_buffer.close()
 
 
+# def solver_runner(shm_name, stop_signal):
+#     URDF = "/home/uon/Downloads/ik_solver-dev/data/robot/urdf/doosan_m1013.urdf"
+#     solver = PyIk(URDF)
+#     is_init_ik = False
+
+#     while not stop_signal.is_set():
+#         if not is_init_ik:
+#             continue
+
+#         target_pose = TARGET_POSE  # TCP Pose
+
+#         target_matrix = PyIk.make_tf(
+#             target_pose[0],
+#             target_pose[1],
+#             target_pose[2],  # x, y, z [m]
+#             target_pose[3],
+#             target_pose[4],
+#             target_pose[5],  # roll, pitch, yaw [rad]
+#             use_deg=False,
+#         )
+
+#         solver.movel(target_matrix)  # This
+
+
 u, v = 0, 0
 
 
@@ -363,12 +386,12 @@ def main():
     camera_process = mp.Process(target=camera_runner, args=(camera_shm_name, stop_signal, frame_ready_signal))
     camera_process.start()
 
-    detector_shm_name = "detection_buffer"
-    detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=True)
-    detector_process = mp.Process(
-        target=detector_runner, args=(camera_shm_name, detector_shm_name, stop_signal, frame_ready_signal)
-    )
-    detector_process.start()
+    # detector_shm_name = "detection_buffer"
+    # detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=True)
+    # detector_process = mp.Process(
+    #     target=detector_runner, args=(camera_shm_name, detector_shm_name, stop_signal, frame_ready_signal)
+    # )
+    # detector_process.start()
 
     # control_process = mp.Process(target=control_runner, args=(detector_shm_name, stop_signal))
     # control_process.start()
@@ -379,25 +402,18 @@ def main():
     robot = DoosanRobotController("192.168.1.30", 500)
 
     INIT_JOINT = np.zeros((7,))
-    INIT_POSE = [-0.37411, 0.73885, 0.5, 180, 180, 90]
+    # INIT_POSE = [-0.37411, 0.73885, 0.5, 180, 180, 90]
     # INIT_POSE = [0.480, 0.550, 0.6, 180, 180, 90]
-    # INIT_POSE = [0.0, 0.9, 0.5, 180, 180, -90 + 90]
+    INIT_POSE = [0.0, 0.9, 0.5, 180, 180, -90 + 90]
     TARGET_POSE = INIT_POSE
     # TARGET_POSE = [0.0, 0.9, 0.5, 180, 180, -90 + 90]
 
     def ik_callback():
-        # d = 0.0005  # 1mm씩 움직임
-
         while True:
             if not is_init_ik:
                 continue
 
-            # if TARGET_POSE[2] < 0.3 or TARGET_POSE[2] > 0.7:
-            # d *= -1
-            # TARGET_POSE[2] = TARGET_POSE[2] + d
-
             target_pose = TARGET_POSE  # TCP Pose
-
             target_matrix = PyIk.make_tf(
                 target_pose[0],
                 target_pose[1],
@@ -405,7 +421,7 @@ def main():
                 target_pose[3],
                 target_pose[4],
                 target_pose[5],  # roll, pitch, yaw [rad]
-                use_deg=False,
+                use_deg=True,
             )
 
             solver.movel(target_matrix)  # This Must be in threding
@@ -425,7 +441,7 @@ def main():
     INIT_JOINT[:6] = robot.get_curr_joint_deg()
     # robot.movej(INIT_JOINT, 3.0)  # 3 sec moving
     solver.set_joint(INIT_JOINT, use_deg=True)
-    solver.set_tcp_max_speed(1)
+    # solver.set_tcp_max_speed(1)
     solver.set_end_effector_offset(TOOL_CAM)
     is_init_ik = True
 
@@ -453,22 +469,24 @@ def main():
                 TARGET_POSE = INIT_POSE
 
             if state == 1:
-                _, current_tf = robot.get_flange_tf(time.time_ns())
-                current_tf[:3, 3] *= 0.001  # m 변환
-                current_tf = current_tf @ TOOL_SCUTION
-                current_pos = current_tf[:3, 3]
+                # _, current_tf = robot.get_flange_tf(time.time_ns())
+                cur_ret = robot.get_flange_tf(time.time_ns())
+                cur_tf = cur_ret.tf
+                cur_tf[:3, 3] *= 0.001  # m 변환
+                cur_tf = cur_tf @ TOOL_SCUTION
+                current_pos = cur_tf[:3, 3]
                 target_pos = np.array(TARGET_POSE[:3])
                 err_pos = np.linalg.norm(target_pos - current_pos)
 
                 target_rot_deg = np.array(TARGET_POSE[3:])
                 target_rot = R.from_euler("ZYZ", target_rot_deg, degrees=True).as_matrix()
-                current_rot = current_tf[:3, :3]
+                current_rot = cur_tf[:3, :3]
                 R_diff = target_rot @ current_rot.T
                 err_rot_vec = R.from_matrix(R_diff).as_rotvec(degrees=True)
                 err_rot = np.linalg.norm(err_rot_vec)
 
                 # print(f"위치 오차: {err_pos} mm | 회전 오차: {err_rot:.2f}°")
-                if err_pos < 0.005 and err_rot < 1.0:
+                if err_pos < 0.01 and err_rot < 1.0:
                     state = 0
 
             # 3. 화면 출력
@@ -488,7 +506,9 @@ def main():
                 solver.set_end_effector_offset(TOOL_SCUTION)
 
                 depth_img = frame.depth
-                _, current_tf = robot.get_flange_tf(frame.timestamp)
+                # _, current_tf = robot.get_flange_tf(frame.timestamp)
+                cur_ret = robot.get_flange_tf(frame.timestamp)
+                cur_tf = cur_ret.tf
 
                 patch_size = 10
                 half_p = patch_size // 2
@@ -524,8 +544,8 @@ def main():
                 # current_tf[:3, 3] = current_tf[:3, 3] * 0.001  # mm to m
                 # base_point_3d = current_tf @ flange_point_3d
 
-                current_tf[:3, 3] *= 0.001  # mm to m
-                T_base_cam = current_tf @ TOOL_CAM
+                cur_tf[:3, 3] *= 0.001  # mm to m
+                T_base_cam = cur_tf @ TOOL_CAM
                 base_point_3d = T_base_cam @ camera_point_3d
 
                 print(base_point_3d)
@@ -536,7 +556,7 @@ def main():
                     base_point_3d[2],
                     180.0,
                     180.0,
-                    90.0,
+                    0,
                 ]
                 state = 1
 
@@ -551,9 +571,9 @@ def main():
         if camera_process.is_alive():
             camera_process.terminate()
 
-        detector_process.join(timeout=3)
-        if detector_process.is_alive():
-            detector_process.terminate()
+        # detector_process.join(timeout=3)
+        # if detector_process.is_alive():
+        #     detector_process.terminate()
 
         # control_process.join(timeout=3)
         # if control_process.is_alive():
@@ -561,7 +581,7 @@ def main():
 
         cv2.destroyAllWindows()
         camera_buffer.close()
-        detector_buffer.close()
+        # detector_buffer.close()
         print("모든 자원이 정상 해제되었습니다.")
 
     # prev_ts = 0.0
