@@ -3,8 +3,8 @@ import threading
 import math
 import numpy as np  # 💡 행렬 조작을 위해 넘파이 임포트
 
-from ik_py import PyIk
-from dsr_py import DoosanRobotController
+from lib.control.ik_py import PyIk
+from lib.control.dsr_py import DoosanRobotController
 
 np.set_printoptions(suppress=True, precision=4)
 

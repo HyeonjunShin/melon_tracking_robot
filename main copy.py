@@ -50,30 +50,6 @@ TOOL_SCUTION = np.array(
     dtype=np.float64,
 )
 
-FX, FY = 693.3102, 693.4061
-CX, CY = 639.6599, 365.0724
-K = np.array(
-    [
-        [FX, 0.0, CX],
-        [0.0, FY, CY],
-        [0.0, 0.0, 1.0],
-    ],
-    dtype=np.float32,
-)
-D = np.array(
-    [
-        0.00743896747007966,  # k1
-        -0.05456198751926422,  # k2
-        0.03670734167098999,  # p1 (또는 k3, 렌즈 모델에 따라 순서 확인 필요)
-        0.0,  # p2
-        0.0,  # k3
-        0.0,  # k4
-        0.00016195396892726421,  # k5
-        -0.001005938509479165,  # k6
-    ],
-    dtype=np.float32,
-)
-
 
 def camera_runner(
     camera_shm_name,
@@ -404,7 +380,7 @@ def main():
     INIT_JOINT = np.zeros((7,))
     # INIT_POSE = [-0.37411, 0.73885, 0.5, 180, 180, 90]
     # INIT_POSE = [0.480, 0.550, 0.6, 180, 180, 90]
-    INIT_POSE = [0.0, 0.9, 0.5, 180, 180, -90 + 90]
+    INIT_POSE = [0.0, 0.9, 0.0, 180, 180, -90 + 90]
     TARGET_POSE = INIT_POSE
     # TARGET_POSE = [0.0, 0.9, 0.5, 180, 180, -90 + 90]
 
@@ -413,7 +389,8 @@ def main():
             if not is_init_ik:
                 continue
 
-            target_pose = TARGET_POSE  # TCP Pose
+            # target_pose = TARGET_POSE  # TCP Pose
+            target_pose = TARGET_POSE.copy()
             target_matrix = PyIk.make_tf(
                 target_pose[0],
                 target_pose[1],
@@ -465,12 +442,12 @@ def main():
             color_img = cv2.cvtColor(frame.color, cv2.COLOR_RGB2BGR)
 
             if state == 0:
-                solver.set_end_effector_offset(TOOL_CAM)
+                solver.set_end_effector_offset(TOOL_SCUTION)
                 TARGET_POSE = INIT_POSE
 
             if state == 1:
                 # _, current_tf = robot.get_flange_tf(time.time_ns())
-                cur_ret = robot.get_flange_tf(time.time_ns())
+                cur_ret = robot.get_flange_tf(int(time.time_ns() / 1000))
                 cur_tf = cur_ret.tf
                 cur_tf[:3, 3] *= 0.001  # m 변환
                 cur_tf = cur_tf @ TOOL_SCUTION
@@ -506,7 +483,6 @@ def main():
                 solver.set_end_effector_offset(TOOL_SCUTION)
 
                 depth_img = frame.depth
-                # _, current_tf = robot.get_flange_tf(frame.timestamp)
                 cur_ret = robot.get_flange_tf(frame.timestamp)
                 cur_tf = cur_ret.tf
 
@@ -530,13 +506,24 @@ def main():
                 # ------------------------------------------------------------------
 
                 pixel_point = np.array([[[u, v]]], dtype=np.float32)
-                undistorted_norm = cv2.undistortPoints(pixel_point, K, D)
-                x_norm = undistorted_norm[0][0][0]
-                y_norm = undistorted_norm[0][0][1]
+                undistorted_pixel = cv2.undistortPoints(pixel_point, K, D, P=K)
+                u_undist = undistorted_pixel[0][0][0]
+                v_undist = undistorted_pixel[0][0][1]
 
-                X_c = x_norm * z
-                Y_c = y_norm * z
+                # 왜곡 보정된 픽셀 좌표로부터 3D 카메라 좌표계 복원
+                X_c = (u_undist - CX) * z / FX
+                Y_c = (v_undist - CY) * z / FY
                 Z_c = z
+
+                print(frame.timestamp, time.time_ns() / 1000)
+                print(u, v, X_c, Y_c, Z_c)
+                # undistorted_norm = cv2.undistortPoints(pixel_point, K, D)
+                # x_norm = undistorted_norm[0][0][0]
+                # y_norm = undistorted_norm[0][0][1]
+
+                # X_c = x_norm * z
+                # Y_c = y_norm * z
+                # Z_c = z
 
                 camera_point_3d = np.array([X_c, Y_c, Z_c, 1], dtype=np.float32)
                 # flange_point_3d = TOOL_CAM @ camera_point_3d

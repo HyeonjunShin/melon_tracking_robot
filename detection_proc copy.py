@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import multiprocessing as mp
 from scipy.spatial.transform import Rotation as R
@@ -5,10 +6,7 @@ from scipy.spatial.transform import Rotation as R
 from lib.camera.gemini336 import Gemini336
 from lib.camera.buffer import CameraBuffer
 from lib.control.flange_buffer import FlangeBuffer
-from multiprocessing import shared_memory
-
-from lib.detector.detection import Detector, compute_pose, compute_pose_with_undistort
-from lib.detector.detection import DetectorBuffer
+from lib.control.buffer import ControlBuffer
 
 fx = 693.3102
 fy = 693.4061
@@ -47,16 +45,6 @@ TOOL_CAM = np.array(
         [1.0, 0.0, 0.0, 0.00100],
         [0.0, 0.34202, 0.93969, 0.03085],
         [0.0, 0.0, 0.0, 1.00000],
-    ],
-    dtype=np.float64,
-)
-
-TOOL_SCUTION = np.array(
-    [
-        [0.0, -1.0, 0.0, 0.000],
-        [1.0, 0.0, 0.0, 0.000],
-        [0.0, 0.0, 1.0, 0.255],
-        [0.0, 0.0, 0.0, 1.000],
     ],
     dtype=np.float64,
 )
@@ -110,80 +98,6 @@ def camera_runner(
     # )
 
 
-def detector_runner(
-    camera_shm_name,
-    detector_shm_name,
-    stop_signal,
-    frame_ready_signal,
-):
-    camera_buffer = CameraBuffer(shm_name=camera_shm_name, is_owner=False)
-    detector_buffer = DetectorBuffer(shm_name=detector_shm_name, is_owner=False)
-    detector = Detector()
-
-    try:
-        while not stop_signal.is_set():
-            if not camera_buffer.get_status():
-                detector_buffer.set_status(False)
-                continue
-            else:
-                detector_buffer.set_status(True)
-
-            if not frame_ready_signal.wait(timeout=0.035):
-                print("Camera timeout!!")
-                continue
-            frame_ready_signal.clear()
-
-            # loop_start = time.perf_counter()
-            current_frame = camera_buffer.get_latest_frame()
-
-            # if prev_ts == current_frame.timestamp:
-            # continue
-            # prev_ts = current_frame.timestamp
-            # frame_time_sec = prev_ts / 1_000_000.0
-
-            timestamp = current_frame.timestamp
-            color = current_frame.color.copy()
-            depth = current_frame.depth.copy()
-
-            scores, bboxes = detector.detect(color)  # detecte the objects.
-
-            detected = False
-            best_score = 0.0
-            best_bbox = np.zeros((4,), dtype=np.float64)
-            best_centroid = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-            best_rotation = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
-
-            if len(scores) > 0:
-                best_idx = np.argmax(scores)
-                best_score = float(scores[best_idx])
-                best_bbox = bboxes[best_idx].copy()
-
-                best_bbox[[0, 2]] = best_bbox[[0, 2]] * 2
-                best_bbox[[1, 3]] = (best_bbox[[1, 3]] - 12) * 2
-
-                centroid_camera, rotation_camera = compute_pose_with_undistort(
-                    depth, best_bbox, K, D, patch_size=30
-                )
-                if centroid_camera is not None:
-                    best_centroid, best_rotation = transform_cam_to_flange(centroid_camera, rotation_camera)
-                    detected = True
-
-            detector_buffer.write(
-                timestamp=timestamp,
-                detected=detected,
-                score=best_score,
-                bbox=best_bbox.astype(np.float64),
-                centroid=best_centroid,
-                rotation=best_rotation,
-            )
-            # loop_end = time.perf_counter()
-            # proc_time_ms = (loop_end - loop_start) * 1000
-            # print(proc_time_ms)
-    finally:
-        detector_buffer.set_status(False)
-        detector_buffer.close()
-
-
 mouse_x, mouse_y = 0, 0
 
 
@@ -206,14 +120,8 @@ def main():
 
     flange_buffer = FlangeBuffer()
 
-    SHM_NAME = "control_buf"
-    SIZE_IN_BYTES = 7 * np.dtype(np.float64).itemsize
-    control_shm = shared_memory.SharedMemory(create=False, size=SIZE_IN_BYTES, name=SHM_NAME)
-    control_buf = np.ndarray((7,), np.float64, buffer=control_shm.buf)
-
     cv2.namedWindow("color")
     cv2.setMouseCallback("color", mouse_callback)
-    state = 0
 
     while True:
         if not frame_ready_signal.wait(timeout=0.035):
@@ -237,49 +145,21 @@ def main():
 
             TF_FLANGE = flange_buffer.get_flange_tf(frame.timestamp)["T_base_flange"]
             TF_FLANGE[:3, 3] *= 0.001
+
             point_3d_robot = TF_FLANGE @ point_3d_flange
-            target_tf = np.eye(4)
-            target_tf[1, 1] *= -1
-            target_tf[2, 2] *= -1
-            target_tf[:, 3] = point_3d_robot
-            print(target_tf)
-            # print(frame.timestamp, mouse_x, mouse_y)
-            # print(X, Y, Z)
-            # print(point_3d_flange[0], point_3d_flange[1], point_3d_flange[2])
-            # print(point_3d_robot[0], point_3d_robot[1], point_3d_robot[2])
+            print(frame.timestamp, mouse_x, mouse_y)
+            print(X, Y, Z)
+            print(point_3d_flange[0], point_3d_flange[1], point_3d_flange[2])
+            print(point_3d_robot[0], point_3d_robot[1], point_3d_robot[2])
 
             # text = f"3D: X={X:.1f}mm, Y={Y:.1f}mm, Z={Z:.1f}mm"
             # cv2.putText(view, text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
             cv2.circle(view, (mouse_x, mouse_y), 5, (0, 0, 255), -1)
 
         cv2.imshow("color", view)
         key = cv2.waitKey(1)
         if key == ord("q"):
             break
-        if key == ord("c"):
-            control_buf[6] = 0
-        if key == 32:
-            control_buf[6] = 1
-            control_buf[0] = point_3d_robot[0]
-            control_buf[1] = point_3d_robot[1]
-            control_buf[2] = point_3d_robot[2]
-            # solver.set_end_effector_offset(TOOL_SCUTION)
-            # TARGET_POSE = [
-            #     point_3d_robot[0],
-            #     point_3d_robot[1],
-            #     point_3d_robot[2],
-            #     180.0,
-            #     180.0,
-            #     0,
-            # ]
-            # print(point_3d_robot[0], point_3d_robot[1], point_3d_robot[2])
-            # state = 1
-
-        # if state == 0:
-        # solver.set_end_effector_offset(TOOL_CAM)
-        # TARGET_POSE = INIT_POSE
-        # if state == 1:
 
     stop_signal.set()
     camera_process.join(timeout=3)
