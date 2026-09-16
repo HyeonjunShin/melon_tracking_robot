@@ -6,7 +6,7 @@ from utils import draw_3d_axis
 import threading
 
 from lib.camera.gemini336 import Gemini336
-from lib.camera.buffer import CameraBuffer
+from lib.camera.buffer import CameraShm
 
 from lib.tracker.tracker import CentroidTracker3D
 from lib.control.ik_py import PyIk
@@ -32,7 +32,7 @@ def camera_runner(
     color_shape=(1280, 720, 3),
     depth_shape=(1280, 720, 1),
 ):
-    buffer = CameraBuffer(
+    buffer = CameraShm(
         shm_name=camera_shm_name,
         is_owner=False,
         color_shape=color_shape,
@@ -185,7 +185,7 @@ def main():
     frame_ready_signal = mp.Event()
 
     camera_shm_name = "camera_buffer"
-    camera_buffer = CameraBuffer(shm_name=camera_shm_name, is_owner=True)
+    camera_buffer = CameraShm(shm_name=camera_shm_name, is_owner=True)
     camera_process = mp.Process(target=camera_runner, args=(camera_shm_name, stop_signal, frame_ready_signal))
     camera_process.start()
 

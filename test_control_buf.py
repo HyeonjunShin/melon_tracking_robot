@@ -8,7 +8,7 @@ control_buf = np.ndarray((7,), np.float64, buffer=control_shm.buf)
 
 
 while True:
-    d = 0.0001
+    d = 0.00001
     control_buf[0] -= d
     control_buf[6] = 1
     print(control_buf)

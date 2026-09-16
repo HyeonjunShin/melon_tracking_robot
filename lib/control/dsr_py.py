@@ -51,6 +51,9 @@ class DoosanRobotController(drc.DSR):
     def get_cmd_joint(self):
         return super().get_cmd_joint()
 
+    def set_io(self, dIo_index, bOn_off):
+        return super().set_io(dIo_index, bOn_off)
+
 
 if __name__ == "__main__":
     import numpy as np

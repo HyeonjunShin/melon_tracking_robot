@@ -1,7 +1,7 @@
 import numpy as np
 import openvino as ov
 import os
-from lib.camera.buffer import CameraBuffer
+from lib.camera.buffer import CameraShm
 from lib.detector.model import DetectionModel
 from multiprocessing import shared_memory
 from dataclasses import dataclass

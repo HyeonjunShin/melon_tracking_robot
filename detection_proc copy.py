@@ -4,9 +4,10 @@ import multiprocessing as mp
 from scipy.spatial.transform import Rotation as R
 
 from lib.camera.gemini336 import Gemini336
-from lib.camera.buffer import CameraBuffer
+from lib.camera.buffer import CameraShm
 from lib.control.flange_buffer import FlangeBuffer
-from lib.control.buffer import ControlBuffer
+
+# from lib.control.buffer import ControlBuffer
 
 fx = 693.3102
 fy = 693.4061
@@ -57,7 +58,7 @@ def camera_runner(
     color_shape=(1280, 720, 3),
     depth_shape=(1280, 720, 1),
 ):
-    buffer = CameraBuffer(
+    buffer = CameraShm(
         shm_name=camera_shm_name,
         is_owner=False,
         color_shape=color_shape,
@@ -114,7 +115,7 @@ def main():
     frame_ready_signal = mp.Event()
 
     camera_shm_name = "camera_buffer"
-    camera_buffer = CameraBuffer(shm_name=camera_shm_name, is_owner=True)
+    camera_buffer = CameraShm(shm_name=camera_shm_name, is_owner=True)
     camera_process = mp.Process(target=camera_runner, args=(camera_shm_name, stop_signal, frame_ready_signal))
     camera_process.start()
 
@@ -126,7 +127,7 @@ def main():
     while True:
         if not frame_ready_signal.wait(timeout=0.035):
             continue
-        frame = camera_buffer.get_latest_frame()
+        frame = camera_buffer.read()
         frame_ready_signal.clear()
 
         Z = frame.depth[mouse_y][mouse_x].squeeze() * 0.001

@@ -16,7 +16,7 @@ from pyorbbecsdk import (
 )
 
 # from lib.camera.camera_shm import CameraBuffer
-from lib.camera.buffer import CameraBuffer
+from lib.camera.buffer import CameraShm
 
 CHECK_PARAMS = [
     (
@@ -165,7 +165,7 @@ class OrbbecCamera:
 
 
 class CameraManager:
-    def __init__(self, buffer: CameraBuffer):
+    def __init__(self, buffer: CameraShm):
         current_dir = Path(__file__).resolve().parent
         self.settings_path = str((current_dir / "gemini336_settings.json").resolve())
         self.shm_name = shm_name
@@ -210,7 +210,7 @@ class CameraManager:
 
     def run(self, stop_signal: mp.Event):
         print("🎥 [Camera Runner] Lockless 버퍼 기반 스레드/프로세스 시작")
-        self.buffer = CameraBuffer(shm_name=self.shm_name, is_owner=False)
+        self.buffer = CameraShm(shm_name=self.shm_name, is_owner=False)
 
         ctx = Context()
         ctx.set_device_changed_callback(self._on_device_changed)
@@ -318,7 +318,7 @@ if __name__ == "__main__":
     stop_signal = mp.Event()
 
     shm_name = "orbbec_frame_buffer"
-    camera_buffer = CameraBuffer(shm_name=shm_name, is_owner=True)
+    camera_buffer = CameraShm(shm_name=shm_name, is_owner=True)
 
     camera_process = mp.Process(target=camera_runner, args=(shm_name, stop_signal))
     camera_process.start()
@@ -328,7 +328,7 @@ if __name__ == "__main__":
         print("🚀 [Main Controller] 카메라 프로세스 실행 중 (종료하려면 'q' 또는 Ctrl+C)")
         while True:
             if camera_buffer.get_status():
-                frame = camera_buffer.get_latest_frame()
+                frame = camera_buffer.read()
                 if prev_ts == frame.timestamp:
                     continue
                 prev_ts = frame.timestamp

@@ -16,7 +16,7 @@ from pyorbbecsdk import (
 )
 
 # from lib.camera.camera_shm import CameraBuffer
-from lib.camera.buffer import CameraBuffer
+from lib.camera.buffer import CameraShm
 
 
 class OrbbecCamera:
@@ -146,7 +146,7 @@ class CameraManager:
         if shm_name is None:
             self.buffer = None
         else:
-            self.buffer = CameraBuffer(shm_name=shm_name, is_owner=False)
+            self.buffer = CameraShm(shm_name=shm_name, is_owner=False)
 
         self.ctx = Context()
         self.ctx.set_device_changed_callback(self._on_device_changed)

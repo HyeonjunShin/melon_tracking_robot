@@ -14,7 +14,7 @@ robot = DoosanRobotController("192.168.1.30", 500)
 
 SHM_NAME = "control_buf"
 SIZE_IN_BYTES = 7 * np.dtype(np.float64).itemsize
-control_shm = shared_memory.SharedMemory(create=True, size=SIZE_IN_BYTES, name=SHM_NAME)
+control_shm = shared_memory.SharedMemory(create=False, size=SIZE_IN_BYTES, name=SHM_NAME)
 control_buf = np.ndarray((7,), np.float64, buffer=control_shm.buf)
 INIT_POSE = [0.0, 0.9, 0.5, 180, 180, -90 + 90]
 control_buf[:6] = INIT_POSE
@@ -73,7 +73,6 @@ def main():
     time.sleep(0.1)
     robot.servo_on()
     time.sleep(3.0)
-    robot.start_rt()
 
     if not solver.init():
         print("Error: PyIk 초기화 실패")
@@ -82,11 +81,13 @@ def main():
 
     init_joint = np.zeros((7,))
     init_joint[:6] = robot.get_curr_joint_deg()
+    robot.movej(init_joint, 3.0)
     solver.set_joint(init_joint, use_deg=True)
 
     solver.set_end_effector_offset(TOOL_CAM)
     # solver.set_tcp_max_speed(0.1)
 
+    robot.start_rt()
     is_init_ik = True
     th = threading.Thread(target=ik_callback)
     th.start()
@@ -95,9 +96,14 @@ def main():
         if STATE == 0:
             control_buf[:6] = INIT_POSE
             solver.set_end_effector_offset(TOOL_CAM)
+            robot.set_io(8, False)
 
         if STATE == 1:
             solver.set_end_effector_offset(TOOL_SCUTION)
+            robot.set_io(8, True)
+
+        if STATE == 2:
+            solver.set_end_effector_offset(TOOL_CAM)
 
         res = solver.get_current_joint(use_deg=True)
         robot.movej_rt(res[0:6], 0.001)
