@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from multiprocessing import shared_memory
 import numpy as np
+from multiprocessing.resource_tracker import unregister
 
 
 @dataclass(slots=True)
@@ -73,12 +74,14 @@ class TargetShm:
             try:
                 self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
                 print(f"[Python SHM] 기존 공유 메모리 '{self.shm_name}'에 재연결되었습니다.")
+
             except FileNotFoundError:
                 self.shm = shared_memory.SharedMemory(name=self.shm_name, create=True, size=self.total_bytes)
                 self.shm.buf[: self.total_bytes] = b"\x00" * self.total_bytes
                 print(f"[Python SHM] 공유 메모리 '{self.shm_name}' 신규 생성 완료 ({self.total_bytes} bytes)")
         else:
             self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
+            unregister(self.shm._name, "shared_memory")
 
         # 3. Dynamic Zero-copy Mapping
         self._header_arr = np.ndarray((1,), dtype=self.header_dtype, buffer=self.shm.buf)

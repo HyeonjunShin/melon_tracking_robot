@@ -183,7 +183,7 @@ class Detector:
     def __init__(self):
         self.model = DetectionModel()
         self.conf_threshold = 0.8
-        self.model_path = "model_int8.xml"
+        self.model_path = "./model_int8.xml"
 
         core = ov.Core()
         device_name = "GPU" if "GPU" in core.available_devices else "CPU"

@@ -13,6 +13,10 @@ from multiprocessing import shared_memory
 from lib.detector.detection import Detector, compute_pose, compute_pose_with_undistort
 from lib.detector.detection import DetectorBuffer
 import cv2
+import time
+import os
+
+np.set_printoptions(suppress=True)
 
 fx = 693.3102
 fy = 693.4061
@@ -72,6 +76,9 @@ def camera_runner(
     color_shape=(1280, 720, 3),
     depth_shape=(1280, 720, 1),
 ):
+    if hasattr(os, "sched_setaffinity"):
+        os.sched_setaffinity(0, {0})
+
     camera_shm = CameraShm(
         shm_name=camera_shm_name,
         is_owner=False,
@@ -103,6 +110,7 @@ def camera_runner(
 
         camera_shm.write(timestamp, color_data, depth_data)
         frame_ready_signal.set()
+        time.sleep(0.03)
 
     # loop_end = time.perf_counter()
     # proc_time_ms = (process_end - loop_start) * 1000
@@ -120,6 +128,8 @@ def detector_runner(
     stop_signal,
     frame_ready_signal,
 ):
+    if hasattr(os, "sched_setaffinity"):
+        os.sched_setaffinity(0, {1})
     detector = Detector()
 
     camera_shm = CameraShm(shm_name=camera_shm_name, is_owner=False)
@@ -192,18 +202,11 @@ def detector_runner(
                 if len(valid_depths) > 0:
                     Z = float(np.median(valid_depths)) * 0.001
 
-                    # 2D -> 3D Camera Coordinate (Undistortion 적용)
                     pixel_pt = np.array([[[u, v]]], dtype=np.float32)
                     # pixel_pt = np.array([u, v], dtype=np.float32)
 
-                    undistorted_pt = cv2.undistortPoints(pixel_pt, K, D, R=None, P=K).squeeze()
-                    # undistorted_pt = cv2.undistortPoints(pixel_pt, K, D).squeeze()
-
-                    # Pin-hole 모델 3D 백프로젝션
-                    # X = (undistorted_pt[0] - K[0, 2]) * Z / K[0, 0]
-                    # Y = (undistorted_pt[1] - K[1, 2]) * Z / K[1, 1]
+                    undistorted_pt = cv2.undistortPoints(pixel_pt, K, D).squeeze()
                     X, Y = undistorted_pt * Z
-
                     point_3d_camera = np.array([X, Y, Z, 1.0], dtype=np.float64)
 
                     # 1) Camera -> Tool (Flange) Transformation
@@ -212,10 +215,9 @@ def detector_runner(
                     # 2) Tool (Flange) -> Base Robot Coordinate Transformation
                     flange_pose = flange_shm.read(timestamp)
                     TF_FLANGE = flange_pose.TF.copy()
-                    TF_FLANGE[:3, 3] *= 0.001  # mm -> m 변환
 
                     point_3d_robot = TF_FLANGE @ point_3d_flange
-                    point_3d_robot[2] += 0.5
+                    # point_3d_robot[2] += 0.5
 
                     best_TF[:3, 3] = point_3d_robot[:3]
                     detected = True
@@ -252,6 +254,8 @@ def main():
     camera_shm = CameraShm(shm_name="camera_shm", is_owner=True)
     target_shm = TargetShm(shm_name="target_shm", is_owner=True)
 
+
+
     camera_process = mp.Process(
         target=camera_runner, args=(camera_shm.shm_name, stop_signal, frame_ready_signal)
     )
@@ -276,52 +280,56 @@ def main():
 
     # flange_buffer = FlangeBuffer(shm_name="flange_pose", is_owner=True)
 
-    cv2.namedWindow("color")
-    cv2.setMouseCallback("color", mouse_callback)
-    state = 0
+    # cv2.namedWindow("color")
+    # cv2.setMouseCallback("color", mouse_callback)
+    # state = 0
 
     try:
         while True:
-            frame = camera_shm.read()
-            timestamp_us = frame.timestamp
-            color = frame.color.copy()
-            depth = frame.depth.copy()
+            # frame = camera_shm.read()
+            # timestamp_us = frame.timestamp
+            # color = frame.color.copy()
+            # depth = frame.depth.copy()
 
-            Z = depth[mouse_y][mouse_x].squeeze() * 0.001
+            # Z = depth[mouse_y][mouse_x].squeeze() * 0.001
 
-            view = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
-            if Z > 0:
-                u_distorted = float(mouse_x)
-                v_distorted = float(mouse_y)
-                point_pixel = np.array([u_distorted, v_distorted], dtype=np.float64)
+            # view = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+            # if Z > 0:
+            #     u_distorted = float(mouse_x)
+            #     v_distorted = float(mouse_y)
+            #     point_pixel = np.array([u_distorted, v_distorted], dtype=np.float64)
 
-                point_norm_camera = cv2.undistortPoints(point_pixel, K, D).squeeze()
-                X, Y = point_norm_camera * Z
+            #     point_norm_camera = cv2.undistortPoints(point_pixel, K, D).squeeze()
+            #     X, Y = point_norm_camera * Z
 
-                point_3d_camera = np.array([X, Y, Z, 1], dtype=np.float32)
-                point_3d_flange = TOOL_CAM @ point_3d_camera
+            #     point_3d_camera = np.array([X, Y, Z, 1], dtype=np.float32)
+            #     point_3d_flange = TOOL_CAM @ point_3d_camera
 
-                # TF_FLANGE = flange_buffer.get_flange_tf(frame.timestamp)["T_base_flange"]
-                TF_FLANGE = flange_shm.read(frame.timestamp).TF
-                # time_diff_us = flange_buffer.get_flange_tf(frame.timestamp)["time_diff_us"]
-                # print(time_diff_us)
-                TF_FLANGE[:3, 3] *= 0.001
-                point_3d_robot = TF_FLANGE @ point_3d_flange
-                target_tf = np.eye(4)
-                target_tf[1, 1] *= -1
-                target_tf[2, 2] *= -1
-                target_tf[:, 3] = point_3d_robot
-                # print(target_tf)
+            #     # TF_FLANGE = flange_buffer.get_flange_tf(frame.timestamp)["T_base_flange"]
+            #     TF_FLANGE = flange_shm.read(frame.timestamp).TF
+            #     #     # time_diff_us = flange_buffer.get_flange_tf(frame.timestamp)["time_diff_us"]
+            #     #     # print(time_diff_us)
+            #     #     TF_FLANGE[:3, 3] *= 0.001
+            #     point_3d_robot = TF_FLANGE @ point_3d_flange
+            #     # print(point_3d_robot)
+            #     # target_tf = np.eye(4)
+            #     #     target_tf[1, 1] *= -1
+            #     #     target_tf[2, 2] *= -1
+            #     #     target_tf[:, 3] = point_3d_robot
+            #     #     # print(target_tf)
 
-                # print(frame.timestamp, mouse_x, mouse_y)
-                # print(X, Y, Z)
-                # print(point_3d_flange[0], point_3d_flange[1], point_3d_flange[2])
-                print(point_3d_robot[0], point_3d_robot[1], point_3d_robot[2])
+            #     #     # print(frame.timestamp, mouse_x, mouse_y)
+            #     #     # print(X, Y, Z)
+            #     #     # print(point_3d_flange[0], point_3d_flange[1], point_3d_flange[2])
+            #     #     print(point_3d_robot[0], point_3d_robot[1], point_3d_robot[2])
 
-                # text = f"3D: X={X:.1f}mm, Y={Y:.1f}mm, Z={Z:.1f}mm"
-                # cv2.putText(view, text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            #     #     # text = f"3D: X={X:.1f}mm, Y={Y:.1f}mm, Z={Z:.1f}mm"
+            #     #     # cv2.putText(view, text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-                cv2.circle(view, (mouse_x, mouse_y), 5, (0, 0, 255), -1)
+            # cv2.circle(view, (mouse_x, mouse_y), 5, (0, 0, 255), -1)
+            # flange_TF = flange_shm.read(time.time() * 1e-4).TF
+            # print(flange_TF @ TOOL_SCUTION)
+            # print(flange_TF)
 
             target = target_shm.read()
             if target.detected:
@@ -329,20 +337,22 @@ def main():
                 bbox = target.bbox
                 score = target.score
                 target_TF = target.TF
+                print(target_TF)
+            time.sleep(1)
 
-                x1, y1, x2, y2 = map(int, bbox)
-                label_text = f"Melon: {score:.2f}"
-                ts_text = f"TS: {timestamp_us} us"
+            #     x1, y1, x2, y2 = map(int, bbox)
+            #     label_text = f"Melon: {score:.2f}"
+            #     ts_text = f"TS: {timestamp_us} us"
 
-                cv2.rectangle(view, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            #     cv2.rectangle(view, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                cv2.rectangle(
-                    view, (x1, y1 - text_h - 10), (x1 + text_w, y1), (0, 255, 0), -1
-                )  # 채워진 사각형
-                cv2.putText(view, label_text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+            #     (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            #     cv2.rectangle(
+            #         view, (x1, y1 - text_h - 10), (x1 + text_w, y1), (0, 255, 0), -1
+            #     )  # 채워진 사각형
+            #     cv2.putText(view, label_text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
 
-                cv2.putText(view, ts_text, (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            #     cv2.putText(view, ts_text, (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
             # if state == 2:
             #     obj = detector_buffer.get_latest_detection()
@@ -350,10 +360,10 @@ def main():
             #     control_buf[1] = obj.centroid[1]
             #     control_buf[2] = obj.centroid[2]
 
-            cv2.imshow("color", view)
-            key = cv2.waitKey(1)
-            if key == ord("q"):
-                break
+            # cv2.imshow("color", view)
+            # key = cv2.waitKey(1)
+            # if key == ord("q"):
+            # break
             # if key == ord("c"):
             #     control_buf[6] = 0
             #     state = 0

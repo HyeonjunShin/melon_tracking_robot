@@ -2,6 +2,7 @@ import numpy as np
 from multiprocessing import shared_memory
 import ctypes
 from dataclasses import dataclass
+from multiprocessing.resource_tracker import unregister
 
 
 @dataclass(slots=True)
@@ -54,6 +55,7 @@ class CameraShm:
             self.shm = shared_memory.SharedMemory(name=self.shm_name, create=True, size=self.total_bytes)
         else:
             self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
+            unregister(self.shm._name, "shared_memory")
 
         self._header_arr = np.ndarray((1,), dtype=self.header_dtype, buffer=self.shm.buf)
         self.slots = np.ndarray((2,), dtype=self.frame_dtype, buffer=self.shm.buf, offset=self.header_bytes)

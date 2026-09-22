@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from multiprocessing import shared_memory
 import time
 import numpy as np
+from multiprocessing.resource_tracker import unregister
 
 
 @dataclass(slots=True)
@@ -65,6 +66,7 @@ class FlangeShm:
             try:
                 self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
                 print(f"[Python SHM] 기존 공유 메모리 '{self.shm_name}'에 재연결되었습니다.")
+
             except FileNotFoundError:
                 self.shm = shared_memory.SharedMemory(
                     name=self.shm_name, create=True, size=self.shared_memory_size
@@ -75,6 +77,7 @@ class FlangeShm:
                 )
         else:
             self.shm = shared_memory.SharedMemory(name=self.shm_name, create=False)
+            unregister(self.shm._name, "shared_memory")
 
         self._header_arr = np.ndarray((1,), dtype=self.header_dtype, buffer=self.shm.buf)
         self.frame_buffer = np.ndarray(
