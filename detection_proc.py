@@ -86,7 +86,7 @@ def camera_runner(
         depth_shape=depth_shape,
     )
 
-    settings_path = "./gemini336_settings.json"
+    settings_path = "./gemini336_config_lab.json"
     camera = Gemini336(color_shape=color_shape, depth_shape=depth_shape, settings_path=settings_path)
 
     while not stop_signal.is_set():
@@ -254,8 +254,6 @@ def main():
     camera_shm = CameraShm(shm_name="camera_shm", is_owner=True)
     target_shm = TargetShm(shm_name="target_shm", is_owner=True)
 
-
-
     camera_process = mp.Process(
         target=camera_runner, args=(camera_shm.shm_name, stop_signal, frame_ready_signal)
     )
@@ -286,14 +284,14 @@ def main():
 
     try:
         while True:
-            # frame = camera_shm.read()
-            # timestamp_us = frame.timestamp
-            # color = frame.color.copy()
-            # depth = frame.depth.copy()
+            frame = camera_shm.read()
+            timestamp_us = frame.timestamp
+            color = frame.color.copy()
+            depth = frame.depth.copy()
 
             # Z = depth[mouse_y][mouse_x].squeeze() * 0.001
 
-            # view = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+            view = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
             # if Z > 0:
             #     u_distorted = float(mouse_x)
             #     v_distorted = float(mouse_y)
@@ -338,7 +336,7 @@ def main():
                 score = target.score
                 target_TF = target.TF
                 print(target_TF)
-            time.sleep(1)
+            # time.sleep(1)
 
             #     x1, y1, x2, y2 = map(int, bbox)
             #     label_text = f"Melon: {score:.2f}"
@@ -360,10 +358,10 @@ def main():
             #     control_buf[1] = obj.centroid[1]
             #     control_buf[2] = obj.centroid[2]
 
-            # cv2.imshow("color", view)
-            # key = cv2.waitKey(1)
-            # if key == ord("q"):
-            # break
+            cv2.imshow("color", view)
+            key = cv2.waitKey(1)
+            if key == ord("q"):
+                break
             # if key == ord("c"):
             #     control_buf[6] = 0
             #     state = 0
